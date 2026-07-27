@@ -1,0 +1,64 @@
+name: CI
+
+on:
+    push:
+        branches: [main]
+    pull_request:
+
+jobs:
+    test:
+        runs-on: ${{ matrix.os }}
+        strategy:
+            fail-fast: false
+            matrix:
+                os: [ubuntu-latest, windows-latest, macos-latest]
+                node: [20, 22, 24]
+        steps:
+            - uses: actions/checkout@v5
+            - uses: actions/setup-node@v5
+              with:
+                  node-version: ${{ matrix.node }}
+                  cache: npm
+            - run: npm ci
+            - run: npm run lint
+            - run: npm run format:check
+            - run: npm run typecheck
+            - run: npm run coverage
+            # The pretty reporter's failure details can be lost to pipe
+            # buffering; on failure, re-run with the spec reporter to see
+            # which tests failed.
+            - name: Detail test failures
+              if: failure()
+              run: node --test --test-reporter=spec
+
+    badge:
+        needs: test
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        runs-on: ubuntu-latest
+        permissions:
+            contents: write
+        steps:
+            - uses: actions/checkout@v5
+            - uses: actions/setup-node@v5
+              with:
+                  node-version: 24
+                  cache: npm
+            - run: npm ci
+            - run: npm run coverage
+            - run: node tools/coverage-badge.mjs "$RUNNER_TEMP/coverage.svg"
+            - name: Publish badge to the badges branch
+              run: |
+                  git config user.name "github-actions[bot]"
+                  git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+                  if git fetch origin badges; then
+                      git switch -c badges FETCH_HEAD
+                  else
+                      git switch --orphan badges
+                  fi
+                  cp "$RUNNER_TEMP/coverage.svg" coverage.svg
+                  git add coverage.svg
+                  if git commit -m "Update coverage badge"; then
+                      git push origin HEAD:badges
+                  else
+                      echo "Badge unchanged"
+                  fi

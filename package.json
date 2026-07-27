@@ -1,17 +1,35 @@
 {
-  "name": "@yourlivingroom/pulp-db",
-  "version": "0.1.0",
-  "description": "",
-  "main": "index.mjs",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "author": "",
-  "license": "ISC",
-  "dependencies": {
-    "@yourlivingroom/cardcatalog": "^0.1.0",
-    "immer": "^11.1.0",
-    "p-queue": "^9.0.1",
-    "write-file-atomic": "^7.0.0"
-  }
+    "name": "@yourlivingroom/pulp-db",
+    "version": "0.1.0",
+    "description": "",
+    "main": "index.mjs",
+    "scripts": {
+        "test": "node --test --test-reporter=@voxpelli/node-test-pretty-reporter",
+        "coverage": "c8 --100 --reporter=text --reporter=json-summary npm test",
+        "lint": "eslint . --max-warnings 0",
+        "format": "prettier --write .",
+        "format:check": "prettier --check .",
+        "typecheck": "tsc --noEmit"
+    },
+    "author": "",
+    "license": "ISC",
+    "dependencies": {
+        "@yourlivingroom/cardcatalog": "^0.1.0",
+        "immer": "^11.1.0",
+        "p-queue": "^9.0.1",
+        "write-file-atomic": "^7.0.0"
+    },
+    "devDependencies": {
+        "@eslint/js": "^10.0.1",
+        "@types/node": "^26.1.1",
+        "@voxpelli/node-test-pretty-reporter": "^1.1.2",
+        "badge-maker": "^6.0.0",
+        "c8": "^12.0.0",
+        "eslint": "^10.8.0",
+        "eslint-plugin-perfectionist": "^5.10.0",
+        "globals": "^17.8.0",
+        "prettier": "^3.9.6",
+        "typescript": "^6.0.3"
+    },
+    "type": "module"
 }

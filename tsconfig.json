@@ -1,0 +1,16 @@
+{
+    "compilerOptions": {
+        "target": "es2023",
+        "module": "node16",
+        "moduleResolution": "node16",
+        "lib": ["es2023"],
+        "types": ["node"],
+        "strict": true,
+        "noEmit": true,
+        // Off on purpose: index.d.mts is a declaration file, so skipping lib
+        // checks would skip checking the very thing under test.
+        "skipLibCheck": false,
+        "allowJs": false
+    },
+    "files": ["index.d.mts", "test-d/index.test-d.ts"]
+}
