@@ -633,13 +633,19 @@ test('dataPath defaults to ./db when not supplied', async (t) => {
 
 test('paths default to ./db and ./index relative to the cwd', async (t) => {
     const root = fs.mkdtempSync(pathLib.join(os.tmpdir(), 'pulp-db-'));
-    const cwd = process.cwd();
+    const originalCwd = process.cwd();
     process.chdir(root);
+
+    // Ask for the cwd *after* chdir rather than reusing the mkdtemp path:
+    // chdir canonicalizes, so os.tmpdir()'s spelling and the process's differ
+    // (/var vs /private/var on macOS, RUNNER~1 vs runneradmin on Windows),
+    // and the library resolves relative paths against the latter.
+    const cwd = process.cwd();
 
     const db = pulpDb({});
     t.after(async () => {
         await db.close();
-        process.chdir(cwd);
+        process.chdir(originalCwd);
         fs.rmSync(root, {
             recursive: true,
             force: true,
@@ -651,9 +657,9 @@ test('paths default to ./db and ./index relative to the cwd', async (t) => {
     // Both defaults resolve against the cwd, and being siblings they satisfy
     // the containment guard. cardcatalog reports dataPath absolute but hands
     // indexPath back as given, so check the latter on disk instead.
-    assert.equal(db.dataPath, pathLib.resolve(root, 'db'));
+    assert.equal(db.dataPath, pathLib.join(cwd, 'db'));
     assert.ok(fs.existsSync(db.dataPath));
-    assert.ok(fs.existsSync(pathLib.join(root, 'index')));
+    assert.ok(fs.existsSync(pathLib.join(cwd, 'index')));
 });
 
 test('inline get() throws when several documents match', async (t) => {
