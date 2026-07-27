@@ -103,16 +103,56 @@ test('edit() can delete a document', async (t) => {
     assert.deepEqual(await db.list(), []);
 });
 
-test('deleting an absent document is a no-op', async (t) => {
+test('delete is idempotent', async (t) => {
     const db = makeDb(t);
 
-    const result = await db.edit('gone.json', (doc, { delete: del }) => {
-        if (doc !== undefined) del();
+    // Unguarded: the caller should not have to check whether it exists first.
+    const absent = await db.edit('gone.json', (doc, { delete: del }) => {
+        del();
+    });
+    assert.equal(absent.oldValue, undefined);
+    assert.equal(absent.newValue, undefined);
+    assert.deepEqual(await db.list(), []);
+
+    // And deleting the same document twice is equally fine.
+    await db.edit('doc.json', () => ({ title: 'Alpha' }));
+    await db.edit('doc.json', (doc, { delete: del }) => del());
+    const again = await db.edit('doc.json', (doc, { delete: del }) => del());
+    assert.equal(again.oldValue, undefined);
+    assert.equal(again.newValue, undefined);
+    assert.deepEqual(await db.list(), []);
+});
+
+test('delete wins over a returned value', async (t) => {
+    const db = makeDb(t);
+
+    await db.edit('a.json', () => ({ n: 1 }));
+    const result = await db.edit('a.json', (doc, { delete: del }) => {
+        del();
+        return { n: 2 };
     });
 
-    assert.equal(result.oldValue, undefined);
     assert.equal(result.newValue, undefined);
-    assert.deepEqual(await db.list(), []);
+    assert.equal(await db.get('a.json'), undefined);
+});
+
+test('a delete that fails for a real reason still reports it', async (t) => {
+    const db = makeDb(t);
+    await db.edit('a.json', () => ({ title: 'Alpha' }));
+
+    const realUnlink = fs.promises.unlink;
+    fs.promises.unlink = async () => {
+        throw Object.assign(new Error('denied'), { code: 'EACCES' });
+    };
+    t.after(() => {
+        fs.promises.unlink = realUnlink;
+    });
+
+    await assert.rejects(
+        () => db.edit('a.json', (doc, { delete: del }) => del()),
+        { code: 'EACCES' },
+    );
+    fs.promises.unlink = realUnlink;
 });
 
 // --- construction ----------------------------------------------------------

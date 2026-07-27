@@ -206,7 +206,19 @@ export default function pulpDb(indexes = {}, opts = {}) {
                 }
 
                 if (shouldDelete) {
-                    await retryingLockErrors(() => fs.promises.unlink(path));
+                    try {
+                        await retryingLockErrors(() =>
+                            fs.promises.unlink(path),
+                        );
+                    } catch (e) {
+                        // Deleting a document that is not there is not a
+                        // failure: the end state the caller asked for already
+                        // holds. Without this every call site has to guard,
+                        // which is exactly what every call site was doing.
+                        if (e.code !== 'ENOENT') {
+                            throw rewrapError(e);
+                        }
+                    }
                 } else if (curJsonValue !== newJsonValue) {
                     try {
                         await fs.promises.mkdir(pathLib.dirname(path), {

@@ -18,7 +18,11 @@ export type {
 
 /** Handed to an updater so it can remove the document it is editing. */
 export interface UpdaterContext {
-    /** Delete this document instead of writing it back. */
+    /**
+     * Delete this document instead of writing it back. Idempotent: deleting a
+     * document that does not exist is a no-op, not an error. Takes precedence
+     * over any value the updater returns.
+     */
     delete(): void;
 }
 

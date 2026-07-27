@@ -73,10 +73,13 @@ counter both land. Edits to different documents proceed in parallel.
 To remove a document, call the `delete` handle:
 
 ```js
-await books.edit('earthsea.json', (draft, { delete: del }) => {
-    if (draft) del();
-});
+await books.edit('earthsea.json', (draft, { delete: del }) => del());
 ```
+
+Deleting is idempotent: calling `delete` on a document that is not there, or
+deleting the same one twice, is a no-op rather than an error, so callers need
+not check first. If an updater both deletes and returns a value, the delete
+wins.
 
 `edit` resolves to `{ oldValue, newValue }`. After a delete, `newValue` is
 `undefined`.
