@@ -1,10 +1,9 @@
-import cardcatolog from '@livingroom/cardcatalog';
+import cardcatalog from '@yourlivingroom/cardcatalog';
 import fs from 'fs';
 import pathLib from 'path';
 import PQueue from 'p-queue';
 import writeFileAtomic from 'write-file-atomic';
 
-import { mkdirp } from 'mkdirp';
 import { produce as immerProduce } from 'immer';
 
 export default function pulpDb(indexes = {}, opts = {}) {
@@ -18,7 +17,7 @@ export default function pulpDb(indexes = {}, opts = {}) {
     //    for low-frequency lookups. The query API is identical either way.
     const cc = opts.inline
         ? null
-        : cardcatolog(indexes, {
+        : cardcatalog(indexes, {
             dataPath: opts.dataPath,
             indexPath: opts.indexPath,
             // We store <id>.json and write atomically (write-file-atomic leaves
@@ -26,7 +25,7 @@ export default function pulpDb(indexes = {}, opts = {}) {
             shouldIndex: (path) => path.endsWith('.json')
         });
     const dataPath = cc ? cc.dataPath : (opts.dataPath ?? './db');
-    const catalogs = cc ? cc.catalogs : inlineCatalogs(indexes, dataPath);
+    const catalogs = cc ? cc.indexes : inlineCatalogs(indexes, dataPath);
 
     // writeFileAtomic already martials requests to a single path, but we also
     // need to martial deletes, so we implement our own per-path-martialing.
@@ -79,7 +78,9 @@ export default function pulpDb(indexes = {}, opts = {}) {
                 }
                 else if (curJsonValue !== newJsonValue) {
                     try {
-                        await mkdirp(pathLib.dirname(path));
+                        await fs.promises.mkdir(pathLib.dirname(path), {
+                            recursive: true
+                        });
                         await writeFileAtomic(path,
                                 JSON.stringify(newJsonValue, null, 4));
                     }

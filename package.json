@@ -1,6 +1,6 @@
 {
-  "name": "@livingroom/pulp-db",
-  "version": "1.0.0",
+  "name": "@yourlivingroom/pulp-db",
+  "version": "0.1.0",
   "description": "",
   "main": "index.mjs",
   "scripts": {
@@ -9,8 +9,8 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@yourlivingroom/cardcatalog": "^0.1.0",
     "immer": "^11.1.0",
-    "mkdirp": "^3.0.1",
     "p-queue": "^9.0.1",
     "write-file-atomic": "^7.0.0"
   }
