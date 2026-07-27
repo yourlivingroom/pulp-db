@@ -2,16 +2,18 @@
 
 import type {
     AnyIndexConfig,
-    Key,
-    Match,
+    Index,
     ValueOf,
 } from '@yourlivingroom/cardcatalog';
 
 export type {
     AnyIndexConfig,
+    Index,
     IndexConfig,
     Key,
     Match,
+    Problem,
+    RangeQuery,
 } from '@yourlivingroom/cardcatalog';
 
 /** Handed to an updater so it can remove the document it is editing. */
@@ -64,26 +66,12 @@ export interface ListPathEntry {
 }
 
 /**
- * The query surface pulp-db guarantees in both modes.
- *
- * In live mode these are cardcatalog `Index` objects, which additionally offer
- * `getRange` and `problems`; inline mode implements only what is declared
- * here, so reaching for the extras ties you to live mode.
+ * The query surface, identical in both modes: `get`, `getMany`, `getRange`,
+ * and `problems`, with the same semantics and the same charwise ordering.
+ * Live mode answers from a stored index; inline mode reproduces the same
+ * results by scanning.
  */
-export interface PulpIndex<Value = unknown> {
-    /**
-     * The single document matching `key`, or `null` if there is none.
-     *
-     * @throws if several documents match.
-     */
-    get(key: Key): Promise<Match<Value> | null>;
-
-    /**
-     * Every document matching `key`, including compound keys it prefixes:
-     * given `emit(['tag', t], …)`, `getMany(['tag'])` yields every tag entry.
-     */
-    getMany(key: Key): AsyncGenerator<Match<Value>, void, undefined>;
-}
+export type PulpIndex<Value = unknown> = Index<Value>;
 
 export interface PulpDbOptions {
     /** Directory holding the collection's documents. Default `'./db'`. */
@@ -99,7 +87,8 @@ export interface PulpDbOptions {
     /**
      * Answer index queries by scanning the collection instead of maintaining
      * a persistent index. No LevelDB, no watcher, and no exclusive lock, so a
-     * short-lived utility can run beside a live server.
+     * short-lived utility can run beside a live server. Queries return the
+     * same results either way.
      */
     inline?: boolean;
 }

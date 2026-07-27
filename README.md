@@ -117,9 +117,15 @@ collection and runs `process()` in memory. No LevelDB, no watcher, no lock,
 so a short-lived utility (a CLI, a migration script) can run alongside a live
 server. Queries return the same results either way.
 
-Inline mode implements `get` and `getMany`. Live mode's index objects are
-cardcatalog's, which also offer `getRange` and `problems`; using those ties
-that code to live mode.
+Both modes implement the same query surface, with the same semantics and the
+same ordering: `get`, `getMany`, `getRange`, and `problems`. Inline mode
+reproduces charwise ordering in memory rather than reading it from a stored
+index, so switching `inline` on or off changes performance characteristics,
+not results.
+
+The trade-off is cost. A live index answers a query with a range scan; inline
+mode re-reads and re-processes the whole collection for each one. That is fine
+for a CLI or a migration script, and wrong for a hot path.
 
 ### Nested documents
 
@@ -158,7 +164,13 @@ provides:
   disk, so it is never stale.
 - `db.indexes.<name>.get(key)` - the single match, or `null`. Throws if
   several documents match.
-- `db.indexes.<name>.getMany(key)` - async iterable of every match.
+- `db.indexes.<name>.getMany(key)` - async iterable of every match, including
+  compound keys the query prefixes.
+- `db.indexes.<name>.getRange({ gt, gte, lt, lte, reverse, limit })` - async
+  iterable over a key range. Bounds address a key's whole subtree: `gte`/`lte`
+  include it, `gt`/`lt` skip past it. `limit` applies after `reverse`.
+- `db.indexes.<name>.problems()` - documents this index cannot process, as
+  `{ path, at, message, stack }`.
 - `db.reindex(path)` - fold a document into a live index now. Resolves `true`
   if it was processed, `false` if it was filtered out. A no-op in inline mode.
 - `db.close()` - stop watching and close the index databases.

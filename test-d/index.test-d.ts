@@ -66,10 +66,13 @@ db.indexes.byTag;
 // @ts-expect-error - no such index
 db.indexes.nope;
 
-// The guaranteed surface is get/getMany; getRange is live-mode only and so is
-// deliberately absent from the declared type.
-// @ts-expect-error - not part of the surface pulp-db guarantees
+// The full cardcatalog surface, in both modes.
 db.indexes.byTag.getRange({});
+db.indexes.byTag.getRange({ gte: ['tag'], reverse: true, limit: 2 });
+db.indexes.byTag.problems();
+
+// @ts-expect-error - limit is a number
+db.indexes.byTag.getRange({ limit: 'two' });
 
 // --- documents -------------------------------------------------------------
 

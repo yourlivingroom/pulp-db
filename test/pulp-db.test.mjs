@@ -456,8 +456,8 @@ test('runtime surface matches the type declarations', async (t) => {
     assert.equal(typeof db.indexPath, 'string');
     assert.deepEqual(Object.keys(db.indexes), ['byTag']);
 
-    // The surface pulp-db guarantees in both modes.
-    for (const method of ['get', 'getMany']) {
+    // The full cardcatalog query surface.
+    for (const method of ['get', 'getMany', 'getRange', 'problems']) {
         assert.equal(typeof db.indexes.byTag[method], 'function', method);
     }
 
@@ -491,10 +491,207 @@ test('inline mode exposes the same surface, minus a live index path', async (t) 
     ]);
     assert.equal(db.indexPath, undefined);
 
-    for (const method of ['get', 'getMany']) {
+    // Same surface as live, not a subset.
+    for (const method of ['get', 'getMany', 'getRange', 'problems']) {
         assert.equal(typeof db.indexes.byTag[method], 'function', method);
     }
 });
+
+// --- mode parity -----------------------------------------------------------
+
+// Every assertion below runs against both modes from one fixture, so any
+// divergence between the stored index and the in-memory scan fails the test.
+for (const inline of [false, true]) {
+    const mode = inline ? 'inline' : 'live';
+
+    async function seedParity(t) {
+        const db = makeDb(
+            t,
+            {
+                byTag: {
+                    valueEncoding: 'json',
+                    process: (content, emit) => {
+                        const doc = JSON.parse(content.toString('utf8'));
+                        if (doc.broken) throw new Error('cannot process');
+                        for (const tag of doc.tags ?? []) {
+                            emit(['tag', tag], doc.title);
+                        }
+                        emit(doc.title, doc.title); // a scalar key too
+                    },
+                },
+            },
+            { inline },
+        );
+
+        for (const [name, doc] of [
+            ['a.json', { title: 'Alpha', tags: ['blue', 'red'] }],
+            ['b.json', { title: 'Beta', tags: ['red'] }],
+            ['sub/c.json', { title: 'Gamma', tags: ['zebra'] }],
+        ]) {
+            await db.edit(name, () => doc, { awaitIndex: true });
+        }
+        return db;
+    }
+
+    test(`${mode}: getRange walks bounds in charwise order`, async (t) => {
+        const db = await seedParity(t);
+        const keys = async (range) =>
+            (await collect(db.indexes.byTag.getRange(range))).map((m) => m.key);
+
+        // Whole index, ascending.
+        assert.deepEqual(await keys({}), [
+            'Alpha',
+            'Beta',
+            'Gamma',
+            ['tag', 'blue'],
+            ['tag', 'red'],
+            ['tag', 'red'],
+            ['tag', 'zebra'],
+        ]);
+
+        // A bound addresses a key's whole subtree.
+        assert.deepEqual(await keys({ gte: ['tag'] }), [
+            ['tag', 'blue'],
+            ['tag', 'red'],
+            ['tag', 'red'],
+            ['tag', 'zebra'],
+        ]);
+        assert.deepEqual(await keys({ gt: ['tag'] }), []);
+        assert.deepEqual(
+            await keys({ gte: ['tag', 'red'], lte: ['tag', 'zebra'] }),
+            [
+                ['tag', 'red'],
+                ['tag', 'red'],
+                ['tag', 'zebra'],
+            ],
+        );
+        assert.deepEqual(
+            await keys({ gt: ['tag', 'red'], lt: ['tag', 'z'] }),
+            [],
+        );
+        assert.deepEqual(await keys({ lt: ['tag'] }), [
+            'Alpha',
+            'Beta',
+            'Gamma',
+        ]);
+    });
+
+    test(`${mode}: getRange honours reverse and limit`, async (t) => {
+        const db = await seedParity(t);
+        const keys = async (range) =>
+            (await collect(db.indexes.byTag.getRange(range))).map((m) => m.key);
+
+        assert.deepEqual(await keys({ limit: 2 }), ['Alpha', 'Beta']);
+        assert.deepEqual(await keys({ reverse: true, limit: 2 }), [
+            ['tag', 'zebra'],
+            ['tag', 'red'],
+        ]);
+        // limit applies after reversal, so this is "last one in the subtree".
+        assert.deepEqual(
+            await keys({ gte: ['tag'], reverse: true, limit: 1 }),
+            [['tag', 'zebra']],
+        );
+    });
+
+    test(`${mode}: getMany matches prefixes and scalars alike`, async (t) => {
+        const db = await seedParity(t);
+        const paths = async (key) =>
+            (await collect(db.indexes.byTag.getMany(key)))
+                .map((m) => m.path)
+                .sort();
+
+        assert.deepEqual(await paths(['tag', 'red']), ['a.json', 'b.json']);
+
+        // a.json carries two tags, so it contributes two entries.
+        assert.deepEqual(await paths(['tag']), [
+            'a.json',
+            'a.json',
+            'b.json',
+            'sub/c.json',
+        ]);
+        assert.deepEqual(await paths('Alpha'), ['a.json']);
+        assert.deepEqual(await paths(['Alpha']), ['a.json']);
+        assert.deepEqual(await paths('absent'), []);
+    });
+
+    test(`${mode}: problems reports documents that cannot be processed`, async (t) => {
+        const db = await seedParity(t);
+        await db.edit('bad.json', () => ({ broken: true }), {
+            awaitIndex: true,
+        });
+
+        const problems = await collect(db.indexes.byTag.problems());
+        assert.deepEqual(
+            problems.map((p) => p.path),
+            ['bad.json'],
+        );
+        assert.equal(problems[0].message, 'cannot process');
+        assert.equal(typeof problems[0].at, 'string');
+        assert.equal(typeof problems[0].stack, 'string');
+
+        // A quarantined document contributes nothing to the index.
+        assert.deepEqual(
+            (await collect(db.indexes.byTag.getRange({}))).filter(
+                (m) => m.path === 'bad.json',
+            ),
+            [],
+        );
+    });
+
+    test(`${mode}: undefined is rejected in query keys and bounds`, async (t) => {
+        const db = await seedParity(t);
+
+        await assert.rejects(
+            () => collect(db.indexes.byTag.getMany(['tag', undefined])),
+            /reserved as the range-scan sentinel/,
+        );
+        await assert.rejects(
+            () =>
+                collect(db.indexes.byTag.getRange({ gte: ['tag', undefined] })),
+            /reserved as the range-scan sentinel/,
+        );
+
+        // A top-level undefined bound just means "omitted".
+        assert.equal(
+            (await collect(db.indexes.byTag.getRange({ gte: undefined })))
+                .length,
+            7,
+        );
+    });
+
+    test(`${mode}: a repeated key from one document keeps its last value`, async (t) => {
+        const db = makeDb(
+            t,
+            {
+                twice: {
+                    valueEncoding: 'json',
+                    process: (content, emit) => {
+                        emit('dup', 'first');
+                        emit('dup', 'second');
+                    },
+                },
+            },
+            { inline },
+        );
+        await db.edit('a.json', () => ({ any: 'thing' }), {
+            awaitIndex: true,
+        });
+
+        // Both emits become the same stored key, so there is one entry.
+        const hits = await collect(db.indexes.twice.getMany('dup'));
+        assert.equal(hits.length, 1);
+        assert.equal(hits[0].indexValue, 'second');
+    });
+
+    test(`${mode}: get throws a message naming the collision`, async (t) => {
+        const db = await seedParity(t);
+
+        await assert.rejects(
+            () => db.indexes.byTag.get(['tag', 'red']),
+            /Multiple matches for .*"tag","red".* in index "byTag": a\.json, b\.json/,
+        );
+    });
+}
 
 // --- concurrency -----------------------------------------------------------
 

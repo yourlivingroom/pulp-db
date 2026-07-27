@@ -44,6 +44,7 @@
     },
     "dependencies": {
         "@yourlivingroom/cardcatalog": "^0.1.0",
+        "charwise": "^3.0.1",
         "immer": "^11.1.0",
         "p-queue": "^9.0.1",
         "write-file-atomic": "^7.0.0"
