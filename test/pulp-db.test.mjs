@@ -383,6 +383,69 @@ test('reindex() is a no-op in inline mode', async (t) => {
     );
 });
 
+// --- declared surface ------------------------------------------------------
+
+// Guards index.d.mts against drifting from what the implementation exposes;
+// the type tests can only check the declarations' own consistency.
+test('runtime surface matches the type declarations', async (t) => {
+    const db = makeDb(t, tagIndex);
+
+    assert.deepEqual(Object.keys(db).sort(), [
+        'close',
+        'dataPath',
+        'edit',
+        'get',
+        'indexPath',
+        'indexes',
+        'list',
+        'reindex',
+    ]);
+
+    assert.equal(typeof db.dataPath, 'string');
+    assert.equal(pathLib.isAbsolute(db.dataPath), true);
+    assert.equal(typeof db.indexPath, 'string');
+    assert.deepEqual(Object.keys(db.indexes), ['byTag']);
+
+    // The surface pulp-db guarantees in both modes.
+    for (const method of ['get', 'getMany']) {
+        assert.equal(typeof db.indexes.byTag[method], 'function', method);
+    }
+
+    const edited = await db.edit('a.json', () => ({ title: 'Alpha' }), {
+        awaitIndex: true,
+    });
+    assert.deepEqual(Object.keys(edited).sort(), ['newValue', 'oldValue']);
+
+    const [entry] = await db.list();
+    assert.deepEqual(Object.keys(entry).sort(), ['path', 'value']);
+    assert.deepEqual(Object.keys((await db.list({ values: false }))[0]), [
+        'path',
+    ]);
+
+    assert.equal(typeof (await db.reindex('a.json')), 'boolean');
+    assert.equal(await db.close(), undefined);
+});
+
+test('inline mode exposes the same surface, minus a live index path', async (t) => {
+    const db = makeDb(t, tagIndex, { inline: true });
+
+    assert.deepEqual(Object.keys(db).sort(), [
+        'close',
+        'dataPath',
+        'edit',
+        'get',
+        'indexPath',
+        'indexes',
+        'list',
+        'reindex',
+    ]);
+    assert.equal(db.indexPath, undefined);
+
+    for (const method of ['get', 'getMany']) {
+        assert.equal(typeof db.indexes.byTag[method], 'function', method);
+    }
+});
+
 // --- concurrency -----------------------------------------------------------
 
 test('concurrent edits to one path in the same tick do not lose writes', async (t) => {
