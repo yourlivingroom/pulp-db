@@ -193,6 +193,17 @@ export default function pulpDb(indexes = {}, opts = {}) {
                 newValue: result.deleted ? undefined : result.newValue,
             };
         },
+        // "This document changed on disk; fold it into the index now." For
+        // documents written past pulp-db — dropped in by hand, synced, or
+        // restored from a backup — rather than waiting for the watcher to
+        // notice. Resolves true if the document was processed, false if it
+        // was filtered out (anything not named *.json). Inline mode keeps no
+        // persistent index and rescans on every query, so this is a no-op
+        // there and resolves true.
+        async reindex(path) {
+            if (!cc) return true;
+            return await cc.reindex(pathLib.join(dataPath, path));
+        },
         async get(path) {
             path = pathLib.join(dataPath, path);
 

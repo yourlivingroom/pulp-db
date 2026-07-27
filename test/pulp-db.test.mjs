@@ -220,12 +220,10 @@ async function seedNested(db) {
         JSON.stringify({ title: 'Hand', tags: ['x'] }),
     );
 
-    // Nothing told the live index about that one, so wait for the watcher.
-    // (Inline mode scans on every query, so it is current immediately.)
-    await eventually(async () => {
-        const found = await collect(db.indexes.byTag.getMany(['tag', 'x']));
-        assert.equal(found.length, 3, 'watcher has not caught up');
-    });
+    // Nothing told a live index about that one. reindex() folds it in
+    // deterministically; in inline mode it is a no-op that resolves true,
+    // since queries rescan anyway.
+    await db.reindex('deep/er/hand.json');
 }
 
 const NESTED = ['deep/er/hand.json', 'sub/mid.json', 'top.json'];
@@ -264,6 +262,26 @@ test('live and inline modes see identical documents', async (t) => {
         (await inline.list()).map((e) => e.path).sort(),
         (await live.list()).map((e) => e.path).sort(),
     );
+});
+
+test('the watcher notices a nested document created by hand', async (t) => {
+    const db = makeDb(t, tagIndex);
+
+    // No reindex() here: this is the end-to-end path, where cardcatalog's
+    // watcher has to see a file appear in a subdirectory on its own.
+    fs.mkdirSync(pathLib.join(db.dataPath, 'a', 'b'), { recursive: true });
+    fs.writeFileSync(
+        pathLib.join(db.dataPath, 'a', 'b', 'dropped.json'),
+        JSON.stringify({ title: 'Dropped', tags: ['x'] }),
+    );
+
+    const hits = await eventually(async () => {
+        const found = await collect(db.indexes.byTag.getMany(['tag', 'x']));
+        assert.equal(found.length, 1, 'watcher has not caught up');
+        return found;
+    });
+
+    assert.equal(hits[0].path, 'a/b/dropped.json');
 });
 
 test('a directory named like a document is not one', async (t) => {
@@ -308,6 +326,61 @@ test('indexPath inside dataPath is rejected at construction', async (t) => {
     // Siblings are fine.
     const ok = pulpDb({}, { dataPath, indexPath: pathLib.join(root, 'ix') });
     t.after(() => ok.close());
+});
+
+// --- reindex ---------------------------------------------------------------
+
+test('reindex() folds in a document written past pulp-db', async (t) => {
+    const db = makeDb(t, tagIndex);
+
+    fs.mkdirSync(pathLib.join(db.dataPath, 'sub'), { recursive: true });
+    fs.writeFileSync(
+        pathLib.join(db.dataPath, 'sub', 'hand.json'),
+        JSON.stringify({ title: 'Hand', tags: ['x'] }),
+    );
+
+    assert.equal(await db.reindex('sub/hand.json'), true);
+
+    // No polling: reindex resolves once the index reflects the document.
+    const hits = await collect(db.indexes.byTag.getMany(['tag', 'x']));
+    assert.deepEqual(
+        hits.map((h) => h.path),
+        ['sub/hand.json'],
+    );
+});
+
+test('reindex() of a removed document drops its entries', async (t) => {
+    const db = makeDb(t, tagIndex);
+
+    await db.edit('a.json', () => ({ title: 'Alpha', tags: ['x'] }), {
+        awaitIndex: true,
+    });
+
+    fs.unlinkSync(pathLib.join(db.dataPath, 'a.json'));
+    assert.equal(await db.reindex('a.json'), true);
+
+    assert.deepEqual(await collect(db.indexes.byTag.getMany(['tag', 'x'])), []);
+});
+
+test('reindex() reports false for a filtered document', async (t) => {
+    const db = makeDb(t, tagIndex);
+
+    // Only *.json is indexed, so write-file-atomic's temp files stay out.
+    fs.writeFileSync(pathLib.join(db.dataPath, 'notes.txt'), 'not a document');
+    assert.equal(await db.reindex('notes.txt'), false);
+});
+
+test('reindex() is a no-op in inline mode', async (t) => {
+    const db = makeDb(t, tagIndex, { inline: true });
+
+    await db.edit('a.json', () => ({ title: 'Alpha', tags: ['x'] }));
+
+    // Nothing to update: inline queries rescan, so it is already current.
+    assert.equal(await db.reindex('a.json'), true);
+    assert.equal(
+        (await collect(db.indexes.byTag.getMany(['tag', 'x']))).length,
+        1,
+    );
 });
 
 // --- concurrency -----------------------------------------------------------
