@@ -134,6 +134,56 @@ test('failures keep their fs error code', async (t) => {
     assert.match(err.stack, /pulp-db\.test\.mjs/);
 });
 
+test('a transient Windows lock error is retried', async (t) => {
+    const db = makeDb(t);
+    await db.edit('a.json', () => ({ title: 'Alpha' }));
+
+    // Windows reports EPERM while another handle (routinely the watcher) has
+    // the file open, then stops once it closes.
+    const realUnlink = fs.promises.unlink;
+    let attempts = 0;
+    fs.promises.unlink = async (...args) => {
+        if (++attempts < 3) {
+            throw Object.assign(new Error('locked'), { code: 'EPERM' });
+        }
+        return realUnlink(...args);
+    };
+    t.after(() => {
+        fs.promises.unlink = realUnlink;
+    });
+
+    await db.edit('a.json', (doc, { delete: del }) => {
+        del();
+    });
+
+    fs.promises.unlink = realUnlink;
+    assert.equal(attempts, 3, 'should have retried twice before succeeding');
+    assert.equal(await db.get('a.json'), undefined);
+});
+
+test('a persistent lock error is reported', async (t) => {
+    const db = makeDb(t);
+    await db.edit('a.json', () => ({ title: 'Alpha' }));
+
+    const realUnlink = fs.promises.unlink;
+    fs.promises.unlink = async () => {
+        throw Object.assign(new Error('locked'), { code: 'EBUSY' });
+    };
+    t.after(() => {
+        fs.promises.unlink = realUnlink;
+    });
+
+    await assert.rejects(
+        () =>
+            db.edit('a.json', (doc, { delete: del }) => {
+                del();
+            }),
+        { code: 'EBUSY' },
+    );
+
+    fs.promises.unlink = realUnlink;
+});
+
 test('a value that cannot be serialized fails the edit', async (t) => {
     const db = makeDb(t);
 

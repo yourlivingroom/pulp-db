@@ -6,6 +6,25 @@ import writeFileAtomic from 'write-file-atomic';
 
 import { produce as immerProduce } from 'immer';
 
+// Windows refuses to rename over or unlink a file while another handle has it
+// open, reporting EPERM (occasionally EBUSY). That happens routinely here: the
+// index watcher reads a document moments after it changes, so an atomic write
+// landing at the wrong instant fails through no fault of the caller. The
+// condition clears on its own, so retry briefly before giving up. POSIX has no
+// such restriction and never takes the retry path.
+async function retryingLockErrors(op) {
+    for (let attempt = 0; ; attempt++) {
+        try {
+            return await op();
+        } catch (e) {
+            if ((e.code !== 'EPERM' && e.code !== 'EBUSY') || attempt >= 5) {
+                throw e;
+            }
+            await new Promise((r) => setTimeout(r, 10 * 2 ** attempt));
+        }
+    }
+}
+
 // Depth-first walk yielding dataPath-relative, '/'-separated paths of the
 // collection's documents. Paths are assembled from entry names rather than
 // taken from readdir, so separators match cardcatalog's portable keys on every
@@ -150,15 +169,19 @@ export default function pulpDb(indexes = {}, opts = {}) {
                 }
 
                 if (shouldDelete) {
-                    await fs.promises.unlink(path);
+                    await retryingLockErrors(() => fs.promises.unlink(path));
                 } else if (curJsonValue !== newJsonValue) {
                     try {
                         await fs.promises.mkdir(pathLib.dirname(path), {
                             recursive: true,
                         });
-                        await writeFileAtomic(
-                            path,
-                            JSON.stringify(newJsonValue, null, 4),
+                        const serialized = JSON.stringify(
+                            newJsonValue,
+                            null,
+                            4,
+                        );
+                        await retryingLockErrors(() =>
+                            writeFileAtomic(path, serialized),
                         );
                     } catch (e) {
                         // writeFileAtomic() throws without a usable stack
