@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `@yourlivingroom/pulp-db` is a JSON document store over a directory of files: documents are ordinary `.json` files, and it adds atomic read-modify-write edits, per-document serialization, and secondary indexes. The entire implementation is `index.mjs` (a single default-exported factory). Indexing is not implemented here — it is delegated wholesale to `@yourlivingroom/cardcatalog`, which this package wraps.
 
-`velvet` (`../velvet`) is currently the only consumer, and is the place to sanity-check whether an API change reads well in practice.
+Before changing the API, check the change against a real consumer rather than only against the tests: every ergonomic problem found so far surfaced from how calling code actually reads, not from the test suite.
 
 ## Commands
 
