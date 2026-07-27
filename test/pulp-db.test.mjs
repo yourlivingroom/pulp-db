@@ -47,6 +47,22 @@ async function collect(iter) {
     return result;
 }
 
+// A document created behind pulp-db's back reaches a live index only when the
+// watcher notices, which happens on the filesystem's schedule.
+async function eventually(fn, timeoutMs = 5000) {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+        try {
+            return await fn();
+        } catch (e) {
+            if (Date.now() > deadline) {
+                throw e;
+            }
+            await new Promise((r) => setTimeout(r, 50));
+        }
+    }
+}
+
 // --- edit / get / list -----------------------------------------------------
 
 test('edit() creates, reads back, and reports old and new values', async (t) => {
@@ -184,6 +200,114 @@ test('list() enumerates the collection, with or without values', async (t) => {
 test('list() of a collection that was never written is empty', async (t) => {
     const db = makeDb(t);
     assert.deepEqual(await db.list(), []);
+});
+
+// --- nested documents ------------------------------------------------------
+
+// Populate a collection with documents at three depths, one of them written
+// behind pulp-db's back the way a person with a file manager would.
+async function seedNested(db) {
+    await db.edit('top.json', () => ({ title: 'Top', tags: ['x'] }), {
+        awaitIndex: true,
+    });
+    await db.edit('sub/mid.json', () => ({ title: 'Mid', tags: ['x'] }), {
+        awaitIndex: true,
+    });
+
+    fs.mkdirSync(pathLib.join(db.dataPath, 'deep', 'er'), { recursive: true });
+    fs.writeFileSync(
+        pathLib.join(db.dataPath, 'deep', 'er', 'hand.json'),
+        JSON.stringify({ title: 'Hand', tags: ['x'] }),
+    );
+
+    // Nothing told the live index about that one, so wait for the watcher.
+    // (Inline mode scans on every query, so it is current immediately.)
+    await eventually(async () => {
+        const found = await collect(db.indexes.byTag.getMany(['tag', 'x']));
+        assert.equal(found.length, 3, 'watcher has not caught up');
+    });
+}
+
+const NESTED = ['deep/er/hand.json', 'sub/mid.json', 'top.json'];
+
+test('list() finds documents at any depth, slash-separated', async (t) => {
+    const db = makeDb(t, tagIndex);
+    await seedNested(db);
+
+    assert.deepEqual((await db.list()).map((e) => e.path).sort(), NESTED);
+    assert.deepEqual(
+        (await db.list({ values: false })).map((e) => e.path).sort(),
+        NESTED,
+    );
+
+    // The paths list() reports are the ones get() and edit() accept.
+    assert.equal((await db.get('sub/mid.json')).title, 'Mid');
+});
+
+test('live and inline modes see identical documents', async (t) => {
+    const live = makeDb(t, tagIndex);
+    await seedNested(live);
+
+    const inline = makeDb(t, tagIndex, { inline: true });
+    await seedNested(inline);
+
+    const paths = async (db) =>
+        (await collect(db.indexes.byTag.getMany(['tag', 'x'])))
+            .map((m) => m.path)
+            .sort();
+
+    const livePaths = await paths(live);
+    assert.deepEqual(livePaths, NESTED);
+    assert.deepEqual(await paths(inline), livePaths);
+
+    assert.deepEqual(
+        (await inline.list()).map((e) => e.path).sort(),
+        (await live.list()).map((e) => e.path).sort(),
+    );
+});
+
+test('a directory named like a document is not one', async (t) => {
+    const db = makeDb(t, tagIndex, { inline: true });
+
+    await db.edit('real.json', () => ({ title: 'Real', tags: ['x'] }));
+    fs.mkdirSync(pathLib.join(db.dataPath, 'decoy.json'), { recursive: true });
+
+    assert.deepEqual(
+        (await db.list()).map((e) => e.path),
+        ['real.json'],
+    );
+    assert.equal(
+        (await collect(db.indexes.byTag.getMany(['tag', 'x']))).length,
+        1,
+    );
+});
+
+test('indexPath inside dataPath is rejected at construction', async (t) => {
+    const root = fs.mkdtempSync(pathLib.join(os.tmpdir(), 'pulp-db-'));
+    t.after(() =>
+        fs.rmSync(root, {
+            recursive: true,
+            force: true,
+            maxRetries: 10,
+            retryDelay: 50,
+        }),
+    );
+
+    const dataPath = pathLib.join(root, 'db');
+
+    // A recursive scan would otherwise walk the index's own database files.
+    assert.throws(
+        () => pulpDb({}, { dataPath, indexPath: pathLib.join(dataPath, 'ix') }),
+        /indexPath must not be inside dataPath/,
+    );
+    assert.throws(
+        () => pulpDb({}, { dataPath, indexPath: dataPath }),
+        /indexPath must not be inside dataPath/,
+    );
+
+    // Siblings are fine.
+    const ok = pulpDb({}, { dataPath, indexPath: pathLib.join(root, 'ix') });
+    t.after(() => ok.close());
 });
 
 // --- concurrency -----------------------------------------------------------
@@ -369,6 +493,31 @@ test('dataPath defaults to ./db when not supplied', async (t) => {
     const db = pulpDb({}, { inline: true });
     t.after(() => db.close());
     assert.equal(db.dataPath, './db');
+});
+
+test('paths default to ./db and ./index relative to the cwd', async (t) => {
+    const root = fs.mkdtempSync(pathLib.join(os.tmpdir(), 'pulp-db-'));
+    const cwd = process.cwd();
+    process.chdir(root);
+
+    const db = pulpDb({});
+    t.after(async () => {
+        await db.close();
+        process.chdir(cwd);
+        fs.rmSync(root, {
+            recursive: true,
+            force: true,
+            maxRetries: 10,
+            retryDelay: 50,
+        });
+    });
+
+    // Both defaults resolve against the cwd, and being siblings they satisfy
+    // the containment guard. cardcatalog reports dataPath absolute but hands
+    // indexPath back as given, so check the latter on disk instead.
+    assert.equal(db.dataPath, pathLib.resolve(root, 'db'));
+    assert.ok(fs.existsSync(db.dataPath));
+    assert.ok(fs.existsSync(pathLib.join(root, 'index')));
 });
 
 test('inline get() throws when several documents match', async (t) => {

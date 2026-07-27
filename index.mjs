@@ -6,7 +6,61 @@ import writeFileAtomic from 'write-file-atomic';
 
 import { produce as immerProduce } from 'immer';
 
+// Depth-first walk yielding dataPath-relative, '/'-separated paths of the
+// collection's documents. Paths are assembled from entry names rather than
+// taken from readdir, so separators match cardcatalog's portable keys on every
+// platform. Directories are recognized before the .json suffix is considered,
+// so a directory that happens to be named like a document is not mistaken for
+// one. A collection that does not exist yet is simply empty.
+async function listJsonFiles(dir, prefix = '') {
+    let entries;
+    try {
+        entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    } catch (e) {
+        if (e.code === 'ENOENT') {
+            return [];
+        }
+        throw e;
+    }
+
+    const found = [];
+    for (const entry of entries) {
+        const relPath = prefix ? `${prefix}/${entry.name}` : entry.name;
+
+        if (entry.isDirectory()) {
+            found.push(
+                ...(await listJsonFiles(
+                    pathLib.join(dir, entry.name),
+                    relPath,
+                )),
+            );
+        } else if (entry.name.endsWith('.json')) {
+            found.push(relPath);
+        }
+    }
+    return found;
+}
+
 export default function pulpDb(indexes = {}, opts = {}) {
+    const dataPathOpt = opts.dataPath ?? './db';
+    const indexPathOpt = opts.indexPath ?? './index';
+
+    // The collection is scanned recursively, so an index database living
+    // inside it would be walked on every list() and inline query — and, worse,
+    // handed to cardcatalog as documents to watch.
+    if (!opts.inline) {
+        const resolvedData = pathLib.resolve(dataPathOpt);
+        const resolvedIndex = pathLib.resolve(indexPathOpt);
+        const rel = pathLib.relative(resolvedData, resolvedIndex);
+
+        if (rel === '' || (!rel.startsWith('..') && !pathLib.isAbsolute(rel))) {
+            throw new Error(
+                'indexPath must not be inside dataPath: ' +
+                    `${resolvedIndex} is inside ${resolvedData}`,
+            );
+        }
+    }
+
     // Two ways to back an index:
     //  - live (default): cardcatalog maintains it in a watched LevelDB — fast,
     //    but holds an exclusive lock and runs a background watcher.
@@ -18,13 +72,13 @@ export default function pulpDb(indexes = {}, opts = {}) {
     const cc = opts.inline
         ? null
         : cardcatalog(indexes, {
-              dataPath: opts.dataPath,
-              indexPath: opts.indexPath,
+              dataPath: dataPathOpt,
+              indexPath: indexPathOpt,
               // We store <id>.json and write atomically (write-file-atomic leaves
               // transient <id>.json.<number> temp files); index only settled docs.
               shouldIndex: (path) => path.endsWith('.json'),
           });
-    const dataPath = cc ? cc.dataPath : (opts.dataPath ?? './db');
+    const dataPath = cc ? cc.dataPath : dataPathOpt;
     const catalogs = cc ? cc.indexes : inlineCatalogs(indexes, dataPath);
 
     // writeFileAtomic already martials requests to a single path, but we also
@@ -160,16 +214,10 @@ export default function pulpDb(indexes = {}, opts = {}) {
         async list({ values = true } = {}) {
             let names;
             try {
-                names = await fs.promises.readdir(dataPath);
+                names = await listJsonFiles(dataPath);
             } catch (e) {
-                if (e.code === 'ENOENT') {
-                    return [];
-                }
-
                 throw rewrapError(e);
             }
-
-            names = names.filter((n) => n.endsWith('.json'));
 
             if (!values) {
                 return names.map((name) => ({ path: name }));
@@ -222,23 +270,23 @@ function inlineCatalogs(indexes, dataPath) {
                 async *getMany(queryKey) {
                     let names;
                     try {
-                        names = await fs.promises.readdir(dataPath);
+                        names = await listJsonFiles(dataPath);
                     } catch (e) {
-                        if (e.code === 'ENOENT') return;
-                        throw e;
+                        throw rewrapError(e);
                     }
 
-                    for (const fileName of names) {
-                        if (!fileName.endsWith('.json')) continue;
-                        const full = pathLib.join(dataPath, fileName);
+                    for (const relPath of names) {
+                        const full = pathLib.join(dataPath, relPath);
                         const content = await fs.promises.readFile(full);
 
                         const emitted = [];
                         try {
+                            // cardcatalog hands process() a dataPath-relative
+                            // path, so match that rather than an absolute one.
                             await config.process(
                                 content,
                                 (k, v) => emitted.push([k, v]),
-                                { path: full },
+                                { path: relPath },
                             );
                         } catch {
                             continue; // skip docs this index can't process
@@ -248,7 +296,7 @@ function inlineCatalogs(indexes, dataPath) {
                             if (keyHasPrefix(queryKey, k)) {
                                 yield {
                                     key: k,
-                                    path: fileName,
+                                    path: relPath,
                                     indexValue: v,
                                     read: (...args) =>
                                         fs.promises.readFile(full, ...args),
