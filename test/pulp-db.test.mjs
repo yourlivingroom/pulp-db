@@ -100,7 +100,7 @@ test('edit() can delete a document', async (t) => {
     assert.equal(removed.newValue, undefined);
 
     assert.equal(await db.get('a.json'), undefined);
-    assert.deepEqual(await db.list(), []);
+    assert.deepEqual(await collect(db.list()), []);
 });
 
 test('delete is idempotent', async (t) => {
@@ -112,7 +112,7 @@ test('delete is idempotent', async (t) => {
     });
     assert.equal(absent.oldValue, undefined);
     assert.equal(absent.newValue, undefined);
-    assert.deepEqual(await db.list(), []);
+    assert.deepEqual(await collect(db.list()), []);
 
     // And deleting the same document twice is equally fine.
     await db.edit('doc.json', () => ({ title: 'Alpha' }));
@@ -120,7 +120,7 @@ test('delete is idempotent', async (t) => {
     const again = await db.edit('doc.json', (doc, { remove }) => remove());
     assert.equal(again.oldValue, undefined);
     assert.equal(again.newValue, undefined);
-    assert.deepEqual(await db.list(), []);
+    assert.deepEqual(await collect(db.list()), []);
 });
 
 test('delete wins over a returned value', async (t) => {
@@ -322,7 +322,7 @@ test('list() and inline queries tolerate a missing collection', async (t) => {
     const db = makeDb(t, tagIndex, { inline: true });
 
     assert.equal(fs.existsSync(db.dataPath), false);
-    assert.deepEqual(await db.list(), []);
+    assert.deepEqual(await collect(db.list()), []);
     assert.deepEqual(await collect(db.indexes.byTag.getMany(['tag', 'x'])), []);
 });
 
@@ -333,7 +333,7 @@ test('list() surfaces non-ENOENT failures with their code', async (t) => {
     fs.mkdirSync(pathLib.dirname(db.dataPath), { recursive: true });
     fs.writeFileSync(db.dataPath, 'not a directory');
 
-    await assert.rejects(() => db.list(), { code: 'ENOTDIR' });
+    await assert.rejects(() => collect(db.list()), { code: 'ENOTDIR' });
 
     // An inline index query over the same broken collection propagates too,
     // rather than quietly reporting no matches.
@@ -349,7 +349,7 @@ test('list() enumerates the collection, with or without values', async (t) => {
     await db.edit('a.json', () => ({ title: 'Alpha' }));
     await db.edit('b.json', () => ({ title: 'Beta' }));
 
-    const withValues = await db.list();
+    const withValues = await collect(db.list());
     assert.deepEqual(withValues.map((e) => e.path).sort(), [
         'a.json',
         'b.json',
@@ -358,14 +358,14 @@ test('list() enumerates the collection, with or without values', async (t) => {
         title: 'Alpha',
     });
 
-    const namesOnly = await db.list({ values: false });
+    const namesOnly = await collect(db.list({ values: false }));
     assert.deepEqual(namesOnly.map((e) => e.path).sort(), ['a.json', 'b.json']);
     assert.ok(!('value' in namesOnly[0]));
 });
 
 test('list() of a collection that was never written is empty', async (t) => {
     const db = makeDb(t);
-    assert.deepEqual(await db.list(), []);
+    assert.deepEqual(await collect(db.list()), []);
 });
 
 // --- nested documents ------------------------------------------------------
@@ -398,9 +398,12 @@ test('list() finds documents at any depth, slash-separated', async (t) => {
     const db = makeDb(t, tagIndex);
     await seedNested(db);
 
-    assert.deepEqual((await db.list()).map((e) => e.path).sort(), NESTED);
     assert.deepEqual(
-        (await db.list({ values: false })).map((e) => e.path).sort(),
+        (await collect(db.list())).map((e) => e.path).sort(),
+        NESTED,
+    );
+    assert.deepEqual(
+        (await collect(db.list({ values: false }))).map((e) => e.path).sort(),
         NESTED,
     );
 
@@ -425,8 +428,8 @@ test('live and inline modes see identical documents', async (t) => {
     assert.deepEqual(await paths(inline), livePaths);
 
     assert.deepEqual(
-        (await inline.list()).map((e) => e.path).sort(),
-        (await live.list()).map((e) => e.path).sort(),
+        (await collect(inline.list())).map((e) => e.path).sort(),
+        (await collect(live.list())).map((e) => e.path).sort(),
     );
 });
 
@@ -457,7 +460,7 @@ test('a directory named like a document is not one', async (t) => {
     fs.mkdirSync(pathLib.join(db.dataPath, 'decoy.json'), { recursive: true });
 
     assert.deepEqual(
-        (await db.list()).map((e) => e.path),
+        (await collect(db.list())).map((e) => e.path),
         ['real.json'],
     );
     assert.equal(
@@ -582,11 +585,12 @@ test('runtime surface matches the type declarations', async (t) => {
     });
     assert.deepEqual(Object.keys(edited).sort(), ['newValue', 'oldValue']);
 
-    const [entry] = await db.list();
+    const [entry] = await collect(db.list());
     assert.deepEqual(Object.keys(entry).sort(), ['path', 'value']);
-    assert.deepEqual(Object.keys((await db.list({ values: false }))[0]), [
-        'path',
-    ]);
+    assert.deepEqual(
+        Object.keys((await collect(db.list({ values: false })))[0]),
+        ['path'],
+    );
 
     assert.equal(typeof (await db.reindex('a.json')), 'boolean');
     assert.equal(await db.close(), undefined);
@@ -979,7 +983,7 @@ test('non-.json files in the collection are ignored', async (t) => {
     fs.writeFileSync(pathLib.join(db.dataPath, 'notes.txt'), 'ignore me');
 
     assert.deepEqual(
-        (await db.list()).map((e) => e.path),
+        (await collect(db.list())).map((e) => e.path),
         ['a.json'],
     );
     assert.equal(

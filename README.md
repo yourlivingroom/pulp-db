@@ -70,8 +70,7 @@ need before calling `edit`.
 Edits to the same document are serialized, so two callers incrementing a
 counter both land. Edits to different documents proceed in parallel.
 
-To remove a document, call the `remove` handle. (It is `remove`, not
-`delete`, so that it can be destructured: `delete` is a reserved word.)
+To remove a document, call the `remove` handle:
 
 ```js
 await books.edit('earthsea.json', (draft, { remove }) => remove());
@@ -108,7 +107,24 @@ await books.reindex('dropped-in-by-hand.json');
 ```
 
 `list()` reads the directory directly rather than the index, so it always
-reflects what is on disk.
+reflects what is on disk:
+
+```js
+for await (const { path, value } of books.list()) {
+    console.log(path, value.title);
+}
+```
+
+It yields as it walks rather than building an array, so a large collection is
+never held in memory at once. When you do want them all, collect it:
+
+```js
+const all = [];
+for await (const entry of books.list()) all.push(entry);
+```
+
+On Node 22 and later, `await Array.fromAsync(books.list())` does the same
+thing.
 
 ### Live and inline modes
 
@@ -122,19 +138,16 @@ so a short-lived utility (a CLI, a migration script) can run alongside a live
 server. Queries return the same results either way.
 
 Both modes implement the same query surface, with the same semantics and the
-same ordering: `get`, `getMany`, `getRange`, and `problems`. They are the same
-implementation - `inline` is passed straight through to
-[cardcatalog][@yourlivingroom/cardcatalog], which provides both - so switching
-it on or off changes performance characteristics, not results.
+same ordering: `get`, `getMany`, `getRange`, and `problems`.
 
 The trade-off is cost. A live index answers a query with a range scan; inline
-mode re-reads and re-processes the whole collection for each one. That is fine
-for a CLI or a migration script, and wrong for a hot path.
+mode re-reads and re-processes the whole collection for each query. That is fine
+for a CLI or a migration script, but wrong for a hot path.
 
 ### Nested documents
 
 Documents may live in subdirectories. `edit('a/b/doc.json', updater)` creates the
-directories it needs, and documents placed in the collection by any other
+directories it needs, and nested documents placed in the collection by any other
 means are picked up just the same. Paths are always reported relative to
 `dataPath` with forward slashes, on every platform, and are exactly what
 `get`, `edit`, and `reindex` accept.
@@ -154,8 +167,7 @@ provides:
 `opts`:
 
 - `dataPath` - directory holding the documents (default `'./db'`).
-- `indexPath` - where live indexes are stored (default `'./index'`). Must not
-  be inside `dataPath`, since the collection is scanned recursively.
+- `indexPath` - where live indexes are stored (default `'./index'`).
 - `inline` - answer queries by scanning instead of maintaining an index.
 
 ### `db`
@@ -163,9 +175,11 @@ provides:
 - `db.edit(path, updater, { awaitIndex? })` - atomic read-modify-write.
   Resolves `{ oldValue, newValue }`.
 - `db.get(path)` - the document, or `undefined`.
-- `db.list({ values? })` - every document in the collection, at any depth, as
-  `{ path, value }` (or just `{ path }` with `values: false`). Reads from
-  disk, so it is never stale.
+- `db.list({ values? })` - async iterable over every document in the
+  collection, at any depth, as `{ path, value }` (or just `{ path }` with
+  `values: false`). Yields as it walks, so a large collection is never held in
+  memory at once. Reads from disk rather than the index, so it is never
+  stale.
 - `db.indexes.<name>.get(key)` - the single match, or `null`. Throws if
   several documents match.
 - `db.indexes.<name>.getMany(key)` - async iterable of every match, including

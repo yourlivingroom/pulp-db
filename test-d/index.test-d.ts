@@ -115,20 +115,24 @@ async function documents() {
 // --- list overloads --------------------------------------------------------
 
 async function listing() {
-    const withValues = await db.list();
-    type _Default = Expect<Equal<typeof withValues, ListEntry<any>[]>>;
-    withValues[0].value;
-    withValues[0].path.trim();
+    for await (const entry of db.list()) {
+        type _Default = Expect<Equal<typeof entry, ListEntry<any>>>;
+        entry.value;
+        entry.path.trim();
+    }
 
-    const explicit = await db.list({ values: true });
-    type _Explicit = Expect<Equal<typeof explicit, ListEntry<any>[]>>;
+    for await (const entry of db.list({ values: true })) {
+        type _Explicit = Expect<Equal<typeof entry, ListEntry<any>>>;
+        entry.value;
+    }
 
-    const pathsOnly = await db.list({ values: false });
-    type _PathsOnly = Expect<Equal<typeof pathsOnly, ListPathEntry[]>>;
-    pathsOnly[0].path.trim();
+    for await (const entry of db.list({ values: false })) {
+        type _PathsOnly = Expect<Equal<typeof entry, ListPathEntry>>;
+        entry.path.trim();
 
-    // @ts-expect-error - no value when values: false
-    pathsOnly[0].value;
+        // @ts-expect-error - no value when values: false
+        entry.value;
+    }
 }
 
 // --- queries ---------------------------------------------------------------
@@ -169,9 +173,10 @@ async function typedDocuments() {
     type _Book = Expect<Equal<typeof book, Book | undefined>>;
     book?.title.trim();
 
-    const entries = await typed.list();
-    type _Entries = Expect<Equal<typeof entries, ListEntry<Book>[]>>;
-    entries[0].value.title.trim();
+    for await (const entry of typed.list()) {
+        type _Entries = Expect<Equal<typeof entry, ListEntry<Book>>>;
+        entry.value.title.trim();
+    }
 
     const edited = await typed.edit('a.json', (draft) => ({ title: 'Alpha' }));
 

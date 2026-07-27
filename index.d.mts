@@ -130,10 +130,15 @@ export interface PulpDb<
 
     /**
      * Enumerate the collection straight from disk at any depth, bypassing the
-     * index — so a just-written document always appears.
+     * index — so a just-written document always appears. Yields as it walks,
+     * so a large collection is never held in memory at once.
      */
-    list(opts?: { values?: true }): Promise<ListEntry<Doc>[]>;
-    list(opts: { values: false }): Promise<ListPathEntry[]>;
+    list(opts?: {
+        values?: true;
+    }): AsyncGenerator<ListEntry<Doc>, void, undefined>;
+    list(opts: {
+        values: false;
+    }): AsyncGenerator<ListPathEntry, void, undefined>;
 
     /**
      * Fold a document written past pulp-db into a live index now, rather than

@@ -42,38 +42,32 @@ async function retryingLockErrors(op) {
 }
 
 // Depth-first walk yielding dataPath-relative, '/'-separated paths of the
-// collection's documents. Paths are assembled from entry names rather than
-// taken from readdir, so separators match cardcatalog's portable keys on every
+// collection's documents, lazily: nothing but the current directory's entries
+// is held at a time. Paths are assembled from entry names rather than taken
+// from readdir, so separators match cardcatalog's portable keys on every
 // platform. Directories are recognized before the .json suffix is considered,
 // so a directory that happens to be named like a document is not mistaken for
 // one. A collection that does not exist yet is simply empty.
-async function listJsonFiles(dir, prefix = '') {
+async function* walkJsonFiles(dir, prefix = '') {
     let entries;
     try {
         entries = await fs.promises.readdir(dir, { withFileTypes: true });
     } catch (e) {
         if (e.code === 'ENOENT') {
-            return [];
+            return;
         }
-        throw e;
+        throw rewrapError(e);
     }
 
-    const found = [];
     for (const entry of entries) {
         const relPath = prefix ? `${prefix}/${entry.name}` : entry.name;
 
         if (entry.isDirectory()) {
-            found.push(
-                ...(await listJsonFiles(
-                    pathLib.join(dir, entry.name),
-                    relPath,
-                )),
-            );
+            yield* walkJsonFiles(pathLib.join(dir, entry.name), relPath);
         } else if (entry.name.endsWith('.json')) {
-            found.push(relPath);
+            yield relPath;
         }
     }
-    return found;
 }
 
 export default function pulpDb(indexes = {}, opts = {}) {
@@ -265,6 +259,31 @@ export default function pulpDb(indexes = {}, opts = {}) {
                 newValue: result.deleted ? undefined : result.newValue,
             };
         },
+        // Enumerate the collection straight from disk at any depth, bypassing
+        // the index — so it is strongly consistent and a just-written document
+        // always appears. Yields as it goes rather than building an array, so
+        // a large collection is never held in memory at once; collect it if
+        // you want them all. `path` is dataPath-relative, matching what
+        // get()/edit() accept.
+        async *list({ values = true } = {}) {
+            for await (const relPath of walkJsonFiles(dataPath)) {
+                if (!values) {
+                    yield { path: relPath };
+                    continue;
+                }
+
+                yield {
+                    path: relPath,
+                    value: JSON.parse(
+                        await fs.promises.readFile(
+                            pathLib.join(dataPath, relPath),
+                            'utf8',
+                        ),
+                    ),
+                };
+            }
+        },
+
         // "This document changed on disk; fold it into the index now." For
         // documents written past pulp-db — dropped in by hand, synced, or
         // restored from a backup — rather than waiting for the watcher to
@@ -287,35 +306,6 @@ export default function pulpDb(indexes = {}, opts = {}) {
 
                 throw rewrapError(e);
             }
-        },
-
-        // Directly enumerate a collection from disk (bypasses the index, so it
-        // is strongly consistent — a just-written record always appears). Each
-        // entry is { path, value }; `path` is relative to the collection's
-        // dataPath, matching what get()/edit() accept.
-        async list({ values = true } = {}) {
-            let names;
-            try {
-                names = await listJsonFiles(dataPath);
-            } catch (e) {
-                throw rewrapError(e);
-            }
-
-            if (!values) {
-                return names.map((name) => ({ path: name }));
-            }
-
-            return await Promise.all(
-                names.map(async (name) => ({
-                    path: name,
-                    value: JSON.parse(
-                        await fs.promises.readFile(
-                            pathLib.join(dataPath, name),
-                            'utf8',
-                        ),
-                    ),
-                })),
-            );
         },
         indexes: cc.indexes,
 
