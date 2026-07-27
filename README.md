@@ -174,24 +174,26 @@ provides:
 
 - `db.edit(path, updater, { awaitIndex? })` - atomic read-modify-write.
   Resolves `{ oldValue, newValue }`.
-- `db.get(path)` - the document, or `undefined`.
+- `db.get(path)` - resolves to the document, or `undefined` if it does not
+  exist.
 - `db.list({ values? })` - async iterable over every document in the
   collection, at any depth, as `{ path, value }` (or just `{ path }` with
   `values: false`). Yields as it walks, so a large collection is never held in
   memory at once. Reads from disk rather than the index, so it is never
   stale.
-- `db.indexes.<name>.get(key)` - the single match, or `null`. Throws if
-  several documents match.
+- `db.indexes.<name>.get(key)` - resolves to the single match, or `null` if
+  there is none. Rejects if several documents match.
 - `db.indexes.<name>.getMany(key)` - async iterable of every match, including
   compound keys the query prefixes.
 - `db.indexes.<name>.getRange({ gt, gte, lt, lte, reverse, limit })` - async
   iterable over a key range. Bounds address a key's whole subtree: `gte`/`lte`
   include it, `gt`/`lt` skip past it. `limit` applies after `reverse`.
-- `db.indexes.<name>.problems()` - documents this index cannot process, as
-  `{ path, at, message, stack }`.
+- `db.indexes.<name>.problems()` - async iterable over the documents this
+  index cannot process, as `{ path, at, message, stack }`.
 - `db.reindex(path)` - fold a document into a live index now. Resolves `true`
   if it was processed, `false` if it was filtered out. A no-op in inline mode.
-- `db.close()` - stop watching and close the index databases.
+- `db.close()` - stop watching and close the index databases. Resolves once
+  cleanup is complete.
 - `db.dataPath` / `db.indexPath` - resolved locations; `indexPath` is
   `undefined` in inline mode.
 
