@@ -115,6 +115,43 @@ test('deleting an absent document is a no-op', async (t) => {
     assert.deepEqual(await db.list(), []);
 });
 
+// --- construction ----------------------------------------------------------
+
+test('an invalid config is rejected identically in both modes', async () => {
+    for (const inline of [false, true]) {
+        const opts = { dataPath: './nowhere', inline };
+        const label = `inline=${inline}`;
+
+        assert.throws(
+            () => pulpDb({ words: {} }, opts),
+            {
+                name: 'TypeError',
+                message: /index "words" needs a process function/,
+            },
+            label,
+        );
+        assert.throws(
+            () => pulpDb({ words: { process: 5 } }, opts),
+            { name: 'TypeError' },
+            label,
+        );
+        assert.throws(
+            () => pulpDb(null, opts),
+            { name: 'TypeError', message: /indexes must be an object/ },
+            label,
+        );
+
+        // Index names become directory names under indexPath.
+        for (const name of ['', '.', '..', '../evil', 'a/b', 'a\\b']) {
+            assert.throws(
+                () => pulpDb({ [name]: { process: () => {} } }, opts),
+                { name: 'TypeError', message: /invalid index name/ },
+                `${label} ${JSON.stringify(name)}`,
+            );
+        }
+    }
+});
+
 // --- error reporting -------------------------------------------------------
 
 test('failures keep their fs error code', async (t) => {
@@ -182,6 +219,45 @@ test('a persistent lock error is reported', async (t) => {
     );
 
     fs.promises.unlink = realUnlink;
+});
+
+test('an unreadable document does not take the process down', async (t) => {
+    const db = makeDb(t, tagIndex);
+
+    // cardcatalog emits infrastructure failures on 'error', and an unhandled
+    // 'error' is fatal by EventEmitter convention. pulp-db has to absorb them.
+    const uncaught = [];
+    const onUncaught = (e) => uncaught.push(e);
+    process.on('uncaughtException', onUncaught);
+
+    const realRead = fs.promises.readFile;
+    fs.promises.readFile = async (...args) => {
+        if (String(args[0]).endsWith('boom.json')) {
+            throw Object.assign(new Error('denied'), { code: 'EACCES' });
+        }
+        return realRead(...args);
+    };
+    t.after(() => {
+        fs.promises.readFile = realRead;
+        process.removeListener('uncaughtException', onUncaught);
+    });
+
+    // Written past pulp-db so the watcher, not edit(), drives the read.
+    fs.writeFileSync(pathLib.join(db.dataPath, 'boom.json'), '{}');
+    await new Promise((r) => setTimeout(r, 800));
+
+    fs.promises.readFile = realRead;
+    process.removeListener('uncaughtException', onUncaught);
+    assert.deepEqual(uncaught, []);
+
+    // The catalog still works afterwards.
+    await db.edit('ok.json', () => ({ title: 'Ok', tags: ['x'] }), {
+        awaitIndex: true,
+    });
+    assert.equal(
+        (await collect(db.indexes.byTag.getMany(['tag', 'x']))).length,
+        1,
+    );
 });
 
 test('a value that cannot be serialized fails the edit', async (t) => {

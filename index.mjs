@@ -7,6 +7,22 @@ import writeFileAtomic from 'write-file-atomic';
 
 import { produce as immerProduce } from 'immer';
 
+// Index bookkeeping is chatty; keep it off unless debugging.
+const debug = process.env.PULP_DB_DEBUG ? console.log.bind(console) : () => {};
+
+// Failures that mean the index itself is unusable, as opposed to one document
+// being momentarily unreadable. Continuing past these would quietly serve
+// stale or empty results forever, which is worse than stopping.
+const FATAL_CODES = new Set(['ENOSPC', 'EROFS']);
+
+function isFatalIndexError(e) {
+    const code = e?.code;
+    return (
+        typeof code === 'string' &&
+        (code.startsWith('LEVEL_') || FATAL_CODES.has(code))
+    );
+}
+
 // Windows refuses to rename over or unlink a file while another handle has it
 // open, reporting EPERM (occasionally EBUSY). That happens routinely here: the
 // index watcher reads a document moments after it changes, so an atomic write
@@ -61,7 +77,43 @@ async function listJsonFiles(dir, prefix = '') {
     return found;
 }
 
+// cardcatalog validates index configs in its own factory, but inline mode
+// never constructs one — so without this a typo'd config would build fine and
+// then quarantine every document with "config.process is not a function",
+// which reads as "no results" rather than as a mistake. Validate the same way
+// up front, whichever mode is in play.
+function validateIndexes(indexes) {
+    if (typeof indexes !== 'object' || indexes === null) {
+        throw new TypeError(
+            'indexes must be an object mapping index names to configs',
+        );
+    }
+
+    for (const [name, config] of Object.entries(indexes)) {
+        if (
+            name === '' ||
+            name === '.' ||
+            name === '..' ||
+            /[/\\]/.test(name)
+        ) {
+            throw new TypeError(
+                'invalid index name ' +
+                    JSON.stringify(name) +
+                    ': index names become directory names under indexPath',
+            );
+        }
+
+        if (typeof config?.process !== 'function') {
+            throw new TypeError(
+                'index ' + JSON.stringify(name) + ' needs a process function',
+            );
+        }
+    }
+}
+
 export default function pulpDb(indexes = {}, opts = {}) {
+    validateIndexes(indexes);
+
     const dataPathOpt = opts.dataPath ?? './db';
     const indexPathOpt = opts.indexPath ?? './index';
 
@@ -98,6 +150,29 @@ export default function pulpDb(indexes = {}, opts = {}) {
               // transient <id>.json.<number> temp files); index only settled docs.
               shouldIndex: (path) => path.endsWith('.json'),
           });
+    // cardcatalog reports infrastructure failures on an 'error' event with
+    // EventEmitter's usual contract: unhandled means the process dies. One
+    // unreadable document should not take a server down with it, so absorb
+    // those and log them. A broken index database is not survivable in the
+    // same way, so it is rethrown — asynchronously, because throwing from
+    // inside emit() would surface as an unhandled rejection rather than the
+    // crash it is.
+    if (cc) {
+        cc.on('error', (e) => {
+            /* c8 ignore start -- reaching this needs a LevelDB failure during
+               a watcher-driven update, which cannot be provoked from outside
+               without an escape hatch into the catalog. */
+            if (isFatalIndexError(e)) {
+                setImmediate(() => {
+                    throw e;
+                });
+                return;
+            }
+            /* c8 ignore stop */
+            debug('pulp-db: index error, continuing:', e);
+        });
+    }
+
     const dataPath = cc ? cc.dataPath : dataPathOpt;
     const catalogs = cc ? cc.indexes : inlineCatalogs(indexes, dataPath);
 
