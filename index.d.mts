@@ -88,7 +88,8 @@ export interface PulpDbOptions {
      * Answer index queries by scanning the collection instead of maintaining
      * a persistent index. No LevelDB, no watcher, and no exclusive lock, so a
      * short-lived utility can run beside a live server. Queries return the
-     * same results either way.
+     * same results either way; what differs is cost. Passed through to
+     * cardcatalog, which implements both modes.
      */
     inline?: boolean;
 }

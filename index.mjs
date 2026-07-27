@@ -1,5 +1,4 @@
 import cardcatalog from '@yourlivingroom/cardcatalog';
-import charwise from 'charwise';
 import fs from 'fs';
 import PQueue from 'p-queue';
 import pathLib from 'path';
@@ -77,43 +76,7 @@ async function listJsonFiles(dir, prefix = '') {
     return found;
 }
 
-// cardcatalog validates index configs in its own factory, but inline mode
-// never constructs one — so without this a typo'd config would build fine and
-// then quarantine every document with "config.process is not a function",
-// which reads as "no results" rather than as a mistake. Validate the same way
-// up front, whichever mode is in play.
-function validateIndexes(indexes) {
-    if (typeof indexes !== 'object' || indexes === null) {
-        throw new TypeError(
-            'indexes must be an object mapping index names to configs',
-        );
-    }
-
-    for (const [name, config] of Object.entries(indexes)) {
-        if (
-            name === '' ||
-            name === '.' ||
-            name === '..' ||
-            /[/\\]/.test(name)
-        ) {
-            throw new TypeError(
-                'invalid index name ' +
-                    JSON.stringify(name) +
-                    ': index names become directory names under indexPath',
-            );
-        }
-
-        if (typeof config?.process !== 'function') {
-            throw new TypeError(
-                'index ' + JSON.stringify(name) + ' needs a process function',
-            );
-        }
-    }
-}
-
 export default function pulpDb(indexes = {}, opts = {}) {
-    validateIndexes(indexes);
-
     const dataPathOpt = opts.dataPath ?? './db';
     const indexPathOpt = opts.indexPath ?? './index';
 
@@ -141,15 +104,14 @@ export default function pulpDb(indexes = {}, opts = {}) {
     //    question, then discard. No LevelDB, no watcher, no lock — usable by a
     //    short-lived utility (e.g. the CLI) beside a live server, and a fine fit
     //    for low-frequency lookups. The query API is identical either way.
-    const cc = opts.inline
-        ? null
-        : cardcatalog(indexes, {
-              dataPath: dataPathOpt,
-              indexPath: indexPathOpt,
-              // We store <id>.json and write atomically (write-file-atomic leaves
-              // transient <id>.json.<number> temp files); index only settled docs.
-              shouldIndex: (path) => path.endsWith('.json'),
-          });
+    const cc = cardcatalog(indexes, {
+        dataPath: dataPathOpt,
+        indexPath: indexPathOpt,
+        // We store <id>.json and write atomically (write-file-atomic leaves
+        // transient <id>.json.<number> temp files); index only settled docs.
+        shouldIndex: (path) => path.endsWith('.json'),
+        inline: opts.inline,
+    });
     // cardcatalog reports infrastructure failures on an 'error' event with
     // EventEmitter's usual contract: unhandled means the process dies. One
     // unreadable document should not take a server down with it, so absorb
@@ -157,7 +119,7 @@ export default function pulpDb(indexes = {}, opts = {}) {
     // same way, so it is rethrown — asynchronously, because throwing from
     // inside emit() would surface as an unhandled rejection rather than the
     // crash it is.
-    if (cc) {
+    {
         cc.on('error', (e) => {
             /* c8 ignore start -- reaching this needs a LevelDB failure during
                a watcher-driven update, which cannot be provoked from outside
@@ -173,8 +135,7 @@ export default function pulpDb(indexes = {}, opts = {}) {
         });
     }
 
-    const dataPath = cc ? cc.dataPath : dataPathOpt;
-    const catalogs = cc ? cc.indexes : inlineCatalogs(indexes, dataPath);
+    const dataPath = cc.dataPath;
 
     // writeFileAtomic already martials requests to a single path, but we also
     // need to martial deletes, so we implement our own per-path-martialing.
@@ -204,7 +165,7 @@ export default function pulpDb(indexes = {}, opts = {}) {
 
     return {
         async close() {
-            if (cc) await cc.close();
+            await cc.close();
         },
         async edit(path, updater, opts = {}) {
             path = pathLib.join(dataPath, path);
@@ -300,7 +261,6 @@ export default function pulpDb(indexes = {}, opts = {}) {
         // persistent index and rescans on every query, so this is a no-op
         // there and resolves true.
         async reindex(path) {
-            if (!cc) return true;
             return await cc.reindex(pathLib.join(dataPath, path));
         },
         async get(path) {
@@ -345,7 +305,7 @@ export default function pulpDb(indexes = {}, opts = {}) {
                 })),
             );
         },
-        indexes: catalogs,
+        indexes: cc.indexes,
 
         // Where documents live. Absolute in live mode (cardcatalog resolves
         // it); as supplied in inline mode.
@@ -353,7 +313,7 @@ export default function pulpDb(indexes = {}, opts = {}) {
 
         // Where the live index databases live; undefined when inline, since
         // inline mode keeps no persistent index.
-        indexPath: cc ? cc.indexPath : undefined,
+        indexPath: cc.indexPath,
     };
 }
 
@@ -367,231 +327,4 @@ function rewrapError(e) {
         wrapped.code = e.code;
     }
     return wrapped;
-}
-
-// cardcatalog stores each entry under [...emittedKey, path] charwise-encoded,
-// and answers a query by scanning between two bounds built from the same
-// sentinels. Inline mode has no stored keys, so it reproduces that ordering in
-// memory: charwise encodings compare lexicographically in charwise order, which
-// is the whole point of the codec.
-const KEY_BOTTOM = null;
-const KEY_TOP = undefined;
-
-function normalizeKey(key) {
-    return Array.isArray(key) ? key : [key];
-}
-
-// undefined is charwise's highest-sorting value, which is why it serves as the
-// upper sentinel — a key containing one would sit at the edge of every range
-// and escape prefix queries. cardcatalog rejects it, so inline mode does too.
-function assertNoUndefined(key, what) {
-    if (key === undefined) {
-        throw new TypeError(
-            what +
-                ' must not contain undefined — it is reserved as the ' +
-                'range-scan sentinel',
-        );
-    }
-
-    if (Array.isArray(key)) {
-        for (const element of key) {
-            assertNoUndefined(element, what);
-        }
-    }
-}
-
-/**
- * Run every document through an index's process(), collecting what it emitted
- * and which documents it could not handle. Entries come back in charwise
- * order, matching the order a stored index would iterate them.
- */
-async function scanCollection(config, dataPath) {
-    let names;
-    try {
-        names = await listJsonFiles(dataPath);
-    } catch (e) {
-        throw rewrapError(e);
-    }
-
-    // Keyed by encoded stored key so a document emitting the same key twice
-    // collapses to its last value, which is what a stored index does: both
-    // emits become the same LevelDB key and the later one wins.
-    const byKey = new Map();
-    const problems = [];
-
-    for (const relPath of names) {
-        const full = pathLib.join(dataPath, relPath);
-        const content = await fs.promises.readFile(full);
-
-        const emitted = [];
-        try {
-            // cardcatalog hands process() a dataPath-relative path, so match
-            // that rather than an absolute one.
-            await config.process(
-                content,
-                (k, v) => {
-                    assertNoUndefined(k, 'emitted key');
-                    emitted.push([normalizeKey(k), v]);
-                },
-                { path: relPath },
-            );
-        } catch (e) {
-            // Quarantine is all-or-nothing, as it is for a stored index:
-            // whatever this document emitted before throwing is discarded.
-            problems.push({
-                path: relPath,
-                at: new Date().toISOString(),
-                message: e.message,
-                stack: e.stack,
-            });
-            continue;
-        }
-
-        for (const [key, indexValue] of emitted) {
-            const encoded = charwise.encode([...key, relPath]);
-            byKey.set(encoded, {
-                encoded,
-                // A single-element key is reported as the scalar itself,
-                // which is what cardcatalog does when it unpacks a stored key.
-                key: key.length === 1 ? key[0] : key,
-                path: relPath,
-                indexValue,
-                full,
-            });
-        }
-    }
-
-    // Encodings are unique after the dedupe above, so a two-way compare is
-    // enough to put them in charwise order.
-    const entries = [...byKey.values()].sort((a, b) =>
-        a.encoded < b.encoded ? -1 : 1,
-    );
-    return { entries, problems };
-}
-
-function withinBounds(encoded, bounds) {
-    if (bounds.gte !== undefined && encoded < bounds.gte) return false;
-    if (bounds.gt !== undefined && encoded <= bounds.gt) return false;
-    if (bounds.lte !== undefined && encoded > bounds.lte) return false;
-    if (bounds.lt !== undefined && encoded >= bounds.lt) return false;
-    return true;
-}
-
-async function* scanRange(config, dataPath, bounds, { reverse, limit } = {}) {
-    const { entries } = await scanCollection(config, dataPath);
-
-    let selected = entries.filter((e) => withinBounds(e.encoded, bounds));
-    if (reverse) {
-        selected.reverse();
-    }
-    if (limit !== undefined) {
-        selected = selected.slice(0, limit);
-    }
-
-    for (const entry of selected) {
-        yield {
-            key: entry.key,
-            path: entry.path,
-            indexValue: entry.indexValue,
-            read: (...args) => fs.promises.readFile(entry.full, ...args),
-            readSync: (...args) => fs.readFileSync(entry.full, ...args),
-        };
-    }
-}
-
-// Answer index queries without any persistent structure: for each query, scan
-// the collection and run the index's process() in memory. Implements the same
-// surface a stored cardcatalog index does, with the same semantics, so code
-// written against one mode behaves identically under the other.
-function inlineCatalogs(indexes, dataPath) {
-    return Object.fromEntries(
-        Object.entries(indexes).map(([name, config]) => [
-            name,
-            {
-                async get(key) {
-                    let result = null;
-
-                    for await (const match of this.getMany(key)) {
-                        if (result) {
-                            throw new Error(
-                                'Multiple matches for ' +
-                                    JSON.stringify(key) +
-                                    ' in index ' +
-                                    JSON.stringify(name) +
-                                    ': ' +
-                                    result.path +
-                                    ', ' +
-                                    match.path,
-                            );
-                        }
-
-                        result = match;
-                    }
-
-                    return result;
-                },
-
-                async *getMany(queryKey) {
-                    assertNoUndefined(queryKey, 'query key');
-                    const key = normalizeKey(queryKey);
-                    yield* scanRange(config, dataPath, {
-                        gte: charwise.encode([...key, KEY_BOTTOM]),
-                        lte: charwise.encode([...key, KEY_TOP]),
-                    });
-                },
-
-                async *getRange(range = {}) {
-                    const bounds = {};
-
-                    // A top-level undefined bound just means "omitted";
-                    // undefined nested inside one is the sentinel hazard.
-                    for (const bound of ['gt', 'gte', 'lt', 'lte']) {
-                        if (range[bound] !== undefined) {
-                            assertNoUndefined(range[bound], 'range bound');
-                        }
-                    }
-
-                    // Bounds address a key's whole subtree, exactly as they do
-                    // for a stored index: gte/lte include it, gt/lt skip past.
-                    if (range.gte !== undefined) {
-                        bounds.gte = charwise.encode([
-                            ...normalizeKey(range.gte),
-                            KEY_BOTTOM,
-                        ]);
-                    }
-                    if (range.gt !== undefined) {
-                        bounds.gt = charwise.encode([
-                            ...normalizeKey(range.gt),
-                            KEY_TOP,
-                        ]);
-                    }
-                    if (range.lte !== undefined) {
-                        bounds.lte = charwise.encode([
-                            ...normalizeKey(range.lte),
-                            KEY_TOP,
-                        ]);
-                    }
-                    if (range.lt !== undefined) {
-                        bounds.lt = charwise.encode([
-                            ...normalizeKey(range.lt),
-                            KEY_BOTTOM,
-                        ]);
-                    }
-
-                    yield* scanRange(config, dataPath, bounds, {
-                        reverse: range.reverse,
-                        limit: range.limit,
-                    });
-                },
-
-                // Documents this index cannot process. A stored index reports
-                // what it recorded when the failure happened; inline mode has
-                // nothing persisted, so it reports what fails right now.
-                async *problems() {
-                    const { problems } = await scanCollection(config, dataPath);
-                    yield* problems;
-                },
-            },
-        ]),
-    );
 }

@@ -951,7 +951,11 @@ test('non-.json files in the collection are ignored', async (t) => {
 test('dataPath defaults to ./db when not supplied', async (t) => {
     const db = pulpDb({}, { inline: true });
     t.after(() => db.close());
-    assert.equal(db.dataPath, './db');
+
+    // Resolved, not echoed back: cardcatalog resolves dataPath in both modes,
+    // so inline no longer reports a relative path where live reports absolute.
+    assert.equal(db.dataPath, pathLib.resolve('./db'));
+    assert.equal(db.indexPath, undefined);
 });
 
 test('paths default to ./db and ./index relative to the cwd', async (t) => {

@@ -118,10 +118,10 @@ so a short-lived utility (a CLI, a migration script) can run alongside a live
 server. Queries return the same results either way.
 
 Both modes implement the same query surface, with the same semantics and the
-same ordering: `get`, `getMany`, `getRange`, and `problems`. Inline mode
-reproduces charwise ordering in memory rather than reading it from a stored
-index, so switching `inline` on or off changes performance characteristics,
-not results.
+same ordering: `get`, `getMany`, `getRange`, and `problems`. They are the same
+implementation - `inline` is passed straight through to
+[cardcatalog][@yourlivingroom/cardcatalog], which provides both - so switching
+it on or off changes performance characteristics, not results.
 
 The trade-off is cost. A live index answers a query with a range scan; inline
 mode re-reads and re-processes the whole collection for each one. That is fine
