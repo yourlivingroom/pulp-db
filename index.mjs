@@ -70,9 +70,7 @@ export default function pulpDb(indexes = {}, opts = {}) {
                     if (e.code === 'ENOENT') {
                         curJsonValue = undefined;
                     } else {
-                        const e2 = new Error(e.message);
-                        e2.cause = e;
-                        throw e2;
+                        throw rewrapError(e);
                     }
                 }
 
@@ -109,11 +107,9 @@ export default function pulpDb(indexes = {}, opts = {}) {
                             JSON.stringify(newJsonValue, null, 4),
                         );
                     } catch (e) {
-                        // writeFileAtomic() helpfully throws erros without
-                        // stack traces.
-                        const e2 = new Error(e.message);
-                        e2.cause = e;
-                        throw e2;
+                        // writeFileAtomic() throws without a usable stack
+                        // trace; rewrapping restores one.
+                        throw rewrapError(e);
                     }
                 }
 
@@ -140,7 +136,7 @@ export default function pulpDb(indexes = {}, opts = {}) {
 
             return {
                 oldValue: result.oldValue,
-                newValue: result.newValue,
+                newValue: result.deleted ? undefined : result.newValue,
             };
         },
         async get(path) {
@@ -153,9 +149,7 @@ export default function pulpDb(indexes = {}, opts = {}) {
                     return undefined;
                 }
 
-                const e2 = new Error(e.message);
-                e2.cause = e;
-                throw e2;
+                throw rewrapError(e);
             }
         },
 
@@ -172,9 +166,7 @@ export default function pulpDb(indexes = {}, opts = {}) {
                     return [];
                 }
 
-                const e2 = new Error(e.message);
-                e2.cause = e;
-                throw e2;
+                throw rewrapError(e);
             }
 
             names = names.filter((n) => n.endsWith('.json'));
@@ -205,6 +197,18 @@ export default function pulpDb(indexes = {}, opts = {}) {
         // inline mode keeps no persistent index.
         indexPath: cc ? cc.indexPath : undefined,
     };
+}
+
+// fs and write-file-atomic both throw errors whose stack traces point into
+// library internals rather than at the caller. Rewrapping fixes that, but the
+// code has to come along or callers lose the ability to tell EACCES from
+// EISDIR without digging through .cause.
+function rewrapError(e) {
+    const wrapped = new Error(e.message, { cause: e });
+    if (e.code !== undefined) {
+        wrapped.code = e.code;
+    }
+    return wrapped;
 }
 
 // Answer index queries without any persistent structure: for each query, scan

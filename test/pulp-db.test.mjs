@@ -74,12 +74,91 @@ test('edit() can delete a document', async (t) => {
     const db = makeDb(t);
 
     await db.edit('a.json', () => ({ title: 'Alpha' }));
-    await db.edit('a.json', (doc, { delete: del }) => {
+    const removed = await db.edit('a.json', (doc, { delete: del }) => {
         del();
     });
 
+    // The document is gone, so newValue reports it gone — even though immer
+    // handed back the old reference.
+    assert.deepEqual(removed.oldValue, { title: 'Alpha' });
+    assert.equal(removed.newValue, undefined);
+
     assert.equal(await db.get('a.json'), undefined);
     assert.deepEqual(await db.list(), []);
+});
+
+test('deleting an absent document is a no-op', async (t) => {
+    const db = makeDb(t);
+
+    const result = await db.edit('gone.json', (doc, { delete: del }) => {
+        if (doc !== undefined) del();
+    });
+
+    assert.equal(result.oldValue, undefined);
+    assert.equal(result.newValue, undefined);
+    assert.deepEqual(await db.list(), []);
+});
+
+// --- error reporting -------------------------------------------------------
+
+test('failures keep their fs error code', async (t) => {
+    const db = makeDb(t);
+
+    // A directory where a document should be: reads fail EISDIR, not ENOENT.
+    fs.mkdirSync(pathLib.join(db.dataPath, 'dir.json'), { recursive: true });
+
+    await assert.rejects(() => db.get('dir.json'), { code: 'EISDIR' });
+    await assert.rejects(() => db.edit('dir.json', (d) => d), {
+        code: 'EISDIR',
+    });
+
+    // The original error is still reachable, and the wrapper has a stack.
+    const err = await db.get('dir.json').catch((e) => e);
+    assert.equal(err.cause.code, 'EISDIR');
+    assert.match(err.stack, /pulp-db\.test\.mjs/);
+});
+
+test('a value that cannot be serialized fails the edit', async (t) => {
+    const db = makeDb(t);
+
+    await assert.rejects(
+        () =>
+            db.edit('a.json', () => {
+                const circular = {};
+                circular.self = circular;
+                return circular;
+            }),
+        /circular/i,
+    );
+
+    // Nothing was written.
+    assert.equal(await db.get('a.json'), undefined);
+});
+
+test('list() and inline queries tolerate a missing collection', async (t) => {
+    // Inline mode never creates dataPath, so it genuinely does not exist.
+    const db = makeDb(t, tagIndex, { inline: true });
+
+    assert.equal(fs.existsSync(db.dataPath), false);
+    assert.deepEqual(await db.list(), []);
+    assert.deepEqual(await collect(db.indexes.byTag.getMany(['tag', 'x'])), []);
+});
+
+test('list() surfaces non-ENOENT failures with their code', async (t) => {
+    // Inline mode, so nothing pre-creates dataPath as a directory.
+    const db = makeDb(t, tagIndex, { inline: true });
+
+    fs.mkdirSync(pathLib.dirname(db.dataPath), { recursive: true });
+    fs.writeFileSync(db.dataPath, 'not a directory');
+
+    await assert.rejects(() => db.list(), { code: 'ENOTDIR' });
+
+    // An inline index query over the same broken collection propagates too,
+    // rather than quietly reporting no matches.
+    await assert.rejects(
+        () => collect(db.indexes.byTag.getMany(['tag', 'x'])),
+        { code: 'ENOTDIR' },
+    );
 });
 
 test('list() enumerates the collection, with or without values', async (t) => {
@@ -241,6 +320,55 @@ test('inline mode answers the same queries with no persistent index', async (t) 
 
     // No index directory is created.
     assert.equal(await db.indexes.byTag.get(['tag', 'absent']), null);
+});
+
+test('inline mode handles scalar keys and non-matching prefixes', async (t) => {
+    const db = makeDb(
+        t,
+        {
+            byWord: {
+                process: (content, emit) => {
+                    const doc = JSON.parse(content.toString('utf8'));
+                    emit(doc.word, doc.word); // scalar key, not an array
+                },
+            },
+        },
+        { inline: true },
+    );
+
+    await db.edit('a.json', () => ({ word: 'alpha' }));
+
+    const hit = await db.indexes.byWord.get('alpha');
+    assert.equal(hit.path, 'a.json');
+    assert.equal(hit.readSync('utf8').includes('alpha'), true);
+    assert.deepEqual(JSON.parse(await hit.read('utf8')), { word: 'alpha' });
+
+    // A query key longer than the emitted key cannot match.
+    assert.equal(await db.indexes.byWord.get(['alpha', 'extra']), null);
+    // Nor can a different key of the same length.
+    assert.equal(await db.indexes.byWord.get('beta'), null);
+});
+
+test('non-.json files in the collection are ignored', async (t) => {
+    const db = makeDb(t, tagIndex, { inline: true });
+
+    await db.edit('a.json', () => ({ title: 'Alpha', tags: ['x'] }));
+    fs.writeFileSync(pathLib.join(db.dataPath, 'notes.txt'), 'ignore me');
+
+    assert.deepEqual(
+        (await db.list()).map((e) => e.path),
+        ['a.json'],
+    );
+    assert.equal(
+        (await collect(db.indexes.byTag.getMany(['tag', 'x']))).length,
+        1,
+    );
+});
+
+test('dataPath defaults to ./db when not supplied', async (t) => {
+    const db = pulpDb({}, { inline: true });
+    t.after(() => db.close());
+    assert.equal(db.dataPath, './db');
 });
 
 test('inline get() throws when several documents match', async (t) => {
