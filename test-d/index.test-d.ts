@@ -85,9 +85,16 @@ async function documents() {
     type _Result = Expect<Equal<typeof result, EditResult<any>>>;
 
     // A draft may not exist yet, and an updater may return nothing.
-    await db.edit('a.json', (draft, { delete: del }) => {
+    await db.edit('a.json', (draft, { remove }) => {
         if (draft === undefined) return;
-        del();
+        remove();
+    });
+
+    // The handle is named so it can be destructured; `delete` is reserved.
+    await db.edit('a.json', (draft, context) => {
+        context.remove();
+        // @ts-expect-error - renamed to remove
+        context.delete();
     });
 
     await db.edit('a.json', (draft) => draft, { awaitIndex: true });

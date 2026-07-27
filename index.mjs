@@ -187,7 +187,7 @@ export default function pulpDb(indexes = {}, opts = {}) {
                 let shouldDelete = false;
                 const newJsonValue = immerProduce(curJsonValue, (draft) =>
                     updater(draft, {
-                        delete: () => {
+                        remove: () => {
                             shouldDelete = true;
                         },
                     }),

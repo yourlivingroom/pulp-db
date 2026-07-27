@@ -90,8 +90,8 @@ test('edit() can delete a document', async (t) => {
     const db = makeDb(t);
 
     await db.edit('a.json', () => ({ title: 'Alpha' }));
-    const removed = await db.edit('a.json', (doc, { delete: del }) => {
-        del();
+    const removed = await db.edit('a.json', (doc, { remove }) => {
+        remove();
     });
 
     // The document is gone, so newValue reports it gone — even though immer
@@ -107,8 +107,8 @@ test('delete is idempotent', async (t) => {
     const db = makeDb(t);
 
     // Unguarded: the caller should not have to check whether it exists first.
-    const absent = await db.edit('gone.json', (doc, { delete: del }) => {
-        del();
+    const absent = await db.edit('gone.json', (doc, { remove }) => {
+        remove();
     });
     assert.equal(absent.oldValue, undefined);
     assert.equal(absent.newValue, undefined);
@@ -116,8 +116,8 @@ test('delete is idempotent', async (t) => {
 
     // And deleting the same document twice is equally fine.
     await db.edit('doc.json', () => ({ title: 'Alpha' }));
-    await db.edit('doc.json', (doc, { delete: del }) => del());
-    const again = await db.edit('doc.json', (doc, { delete: del }) => del());
+    await db.edit('doc.json', (doc, { remove }) => remove());
+    const again = await db.edit('doc.json', (doc, { remove }) => remove());
     assert.equal(again.oldValue, undefined);
     assert.equal(again.newValue, undefined);
     assert.deepEqual(await db.list(), []);
@@ -127,8 +127,8 @@ test('delete wins over a returned value', async (t) => {
     const db = makeDb(t);
 
     await db.edit('a.json', () => ({ n: 1 }));
-    const result = await db.edit('a.json', (doc, { delete: del }) => {
-        del();
+    const result = await db.edit('a.json', (doc, { remove }) => {
+        remove();
         return { n: 2 };
     });
 
@@ -149,7 +149,7 @@ test('a delete that fails for a real reason still reports it', async (t) => {
     });
 
     await assert.rejects(
-        () => db.edit('a.json', (doc, { delete: del }) => del()),
+        () => db.edit('a.json', (doc, { remove }) => remove()),
         { code: 'EACCES' },
     );
     fs.promises.unlink = realUnlink;
@@ -229,8 +229,8 @@ test('a transient Windows lock error is retried', async (t) => {
         fs.promises.unlink = realUnlink;
     });
 
-    await db.edit('a.json', (doc, { delete: del }) => {
-        del();
+    await db.edit('a.json', (doc, { remove }) => {
+        remove();
     });
 
     fs.promises.unlink = realUnlink;
@@ -252,8 +252,8 @@ test('a persistent lock error is reported', async (t) => {
 
     await assert.rejects(
         () =>
-            db.edit('a.json', (doc, { delete: del }) => {
-                del();
+            db.edit('a.json', (doc, { remove }) => {
+                remove();
             }),
         { code: 'EBUSY' },
     );
@@ -899,8 +899,8 @@ test('awaitIndex makes a delete immediately visible to the index', async (t) => 
     // a delete must not be mistaken for "no change".
     await db.edit(
         'a.json',
-        (doc, { delete: del }) => {
-            del();
+        (doc, { remove }) => {
+            remove();
         },
         { awaitIndex: true },
     );
