@@ -655,10 +655,20 @@ test('paths default to ./db and ./index relative to the cwd', async (t) => {
     });
 
     // Both defaults resolve against the cwd, and being siblings they satisfy
-    // the containment guard. cardcatalog reports dataPath absolute but hands
-    // indexPath back as given, so check the latter on disk instead.
-    assert.equal(db.dataPath, pathLib.join(cwd, 'db'));
+    // the containment guard.
+    //
+    // Compared as real paths rather than strings: cardcatalog expands the
+    // watch root with realpath on win32 (its workaround for libuv crashing on
+    // 8.3 short names), so dataPath comes back as C:\Users\runneradmin\...
+    // while process.cwd() still reports C:\Users\RUNNER~1\....
+    const sameFile = (a, b) =>
+        fs.realpathSync.native(a) === fs.realpathSync.native(b);
+
+    assert.ok(pathLib.isAbsolute(db.dataPath));
     assert.ok(fs.existsSync(db.dataPath));
+    assert.ok(sameFile(db.dataPath, pathLib.join(cwd, 'db')));
+
+    // cardcatalog hands indexPath back as given, so check it on disk.
     assert.ok(fs.existsSync(pathLib.join(cwd, 'index')));
 });
 
