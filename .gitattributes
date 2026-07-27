@@ -1,0 +1,3 @@
+# Check out text files with LF everywhere — Windows included — so prettier's
+# LF enforcement and byte-identical tooling behavior hold across platforms.
+* text=auto eol=lf
