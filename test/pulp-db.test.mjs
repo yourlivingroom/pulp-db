@@ -1067,3 +1067,36 @@ test('inline mode skips documents its index cannot process', async (t) => {
         ['good.json'],
     );
 });
+
+test('watch:false — awaitIndex is visible at once; a plain write waits for reindex', async (t) => {
+    // A persistent index with no watcher: it changes only when the caller drives
+    // it. Lets a consumer reproduce eventual-consistency lag deterministically.
+    const db = makeDb(t, tagIndex, { watch: false });
+
+    // A plain edit writes the file but does not touch the index — so an index
+    // query cannot see it yet. Deterministic: nothing sweeps in the background.
+    await db.edit('a.json', () => ({ title: 'Alpha', tags: ['x'] }));
+    assert.deepEqual(await collect(db.indexes.byTag.getMany(['tag', 'x'])), []);
+    // The document itself is readable straight away (get bypasses the index).
+    assert.deepEqual(await db.get('a.json'), { title: 'Alpha', tags: ['x'] });
+
+    // edit() with awaitIndex drives the reindex, so it is visible immediately.
+    await db.edit('b.json', () => ({ title: 'Beta', tags: ['x'] }), {
+        awaitIndex: true,
+    });
+    assert.deepEqual(
+        (await collect(db.indexes.byTag.getMany(['tag', 'x']))).map(
+            (m) => m.indexValue,
+        ),
+        ['Beta'],
+    );
+
+    // An explicit reindex folds in the first document — no polling.
+    await db.reindex('a.json');
+    assert.deepEqual(
+        (await collect(db.indexes.byTag.getMany(['tag', 'x'])))
+            .map((m) => m.indexValue)
+            .sort(),
+        ['Alpha', 'Beta'],
+    );
+});

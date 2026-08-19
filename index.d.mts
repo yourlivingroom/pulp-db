@@ -99,6 +99,17 @@ export interface PulpDbOptions {
      * cardcatalog, which implements both modes.
      */
     inline?: boolean;
+
+    /**
+     * When `false`, maintain a persistent index but update it ONLY when the
+     * caller drives it — `edit()` with `awaitIndex: true`, or an explicit
+     * `reindex()` — with no filesystem watcher, so the index never changes on
+     * its own. This makes eventual-consistency lag reproducible on demand: a
+     * write made without `awaitIndex` stays invisible to index queries until
+     * something reindexes it. Default `true` (a watcher keeps the index fresh).
+     * Ignored when `inline` is set. Passed through to cardcatalog.
+     */
+    watch?: boolean;
 }
 
 export interface PulpDb<

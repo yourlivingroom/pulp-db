@@ -1,6 +1,6 @@
 {
     "name": "@yourlivingroom/pulp-db",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "description": "A JSON document store over a directory of files, with immer-based atomic edits and persistent indexes",
     "keywords": [
         "database",
@@ -43,7 +43,7 @@
         "typecheck": "tsc --noEmit"
     },
     "dependencies": {
-        "@yourlivingroom/cardcatalog": "^0.2.0",
+        "@yourlivingroom/cardcatalog": "^0.3.0",
         "immer": "^11.1.0",
         "p-queue": "^9.0.1",
         "write-file-atomic": "^7.0.0"

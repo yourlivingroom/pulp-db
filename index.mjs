@@ -105,6 +105,12 @@ export default function pulpDb(indexes = {}, opts = {}) {
         // transient <id>.json.<number> temp files); index only settled docs.
         shouldIndex: (path) => path.endsWith('.json'),
         inline: opts.inline,
+        // `watch: false` builds a persistent index that only updates when the
+        // caller drives reindex() (which edit()'s awaitIndex does) — no watcher.
+        // Lets a test reproduce eventual-consistency lag deterministically:
+        // without awaitIndex a write stays unindexed until an explicit reindex.
+        // Undefined → cardcatalog's default (watch on). Ignored when inline.
+        watch: opts.watch,
     });
     // cardcatalog reports infrastructure failures on an 'error' event with
     // EventEmitter's usual contract: unhandled means the process dies. One
