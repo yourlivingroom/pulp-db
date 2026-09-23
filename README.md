@@ -144,6 +144,9 @@ The trade-off is cost. A live index answers a query with a range scan; inline
 mode re-reads and re-processes the whole collection for each query. That is fine
 for a CLI or a migration script, but wrong for a hot path.
 
+A live index can also be built with `watch: false`: it keeps its LevelDB but
+runs no watcher, so it changes only when you reindex it. See `opts` below.
+
 ### Nested documents
 
 Documents may live in subdirectories. `edit('a/b/doc.json', updater)` creates the
@@ -175,6 +178,12 @@ provides:
   be inside `dataPath`, which is rejected at construction: the collection is
   walked recursively, so an index living inside it would be walked too.
 - `inline` - answer queries by scanning instead of maintaining an index.
+- `watch` - default `true`. Set `false` to keep a live index but not watch the
+  directory: the index then updates only when you drive it, via `edit()` with
+  `awaitIndex: true` or an explicit `reindex()`. A write made without
+  `awaitIndex` stays invisible to index queries until something reindexes it,
+  which makes eventual-consistency lag reproducible in tests. Ignored when
+  `inline` is set.
 
 ### `db`
 
